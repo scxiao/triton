@@ -13,6 +13,7 @@
 
 #include <mutex>
 #include <optional>
+#include <iostream>
 
 namespace triton {
 
@@ -107,6 +108,10 @@ std::string translateLLVMIRToPTX(llvm::Module &module, int cc, int version) {
     ;
   while (findAndReplace(result, "\t// end inline asm", "\n", ""))
     ;
+
+  std::cout << "ptr = " << std::endl;
+  std::cout << result << std::endl;
+  
   return result;
 }
 
