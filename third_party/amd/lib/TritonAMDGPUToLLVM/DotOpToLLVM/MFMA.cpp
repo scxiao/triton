@@ -264,7 +264,8 @@ struct DotOpMFMAConversionHelper {
     ValueTable vals;
     for (int i = 0; i < n0; i++) {
       for (int j = 0; j < n1; j++) {
-        Type ty = vec_ty(type, kWidth);
+        Type elemTy = typeConverter->convertType(type);
+        Type ty = vec_ty(elemTy, kWidth);
         Value rawElems = undef(ty);
         for (int k = 0; k < kWidth; ++k) {
           rawElems = insert_element(ty, rawElems, elems[kWidth * (n1 * i + j) + k], i32_val(k));
