@@ -30,9 +30,17 @@ In doing so, you will learn about:
 # Let’s first take a look at the forward pass implementation.
 
 import torch
+import os
 
 import triton
 import triton.language as tl
+from triton.runtime.jit import TensorWrapper, reinterpret
+
+def is_interpreter():
+    return os.environ.get('TRITON_INTERPRET', '0') == '1'
+
+def is_hip():
+    return not is_interpreter() and triton.runtime.driver.active.get_current_target()[0] == "hip"
 
 try:
     # This is https://github.com/NVIDIA/apex, NOT the apex on PyPi, so it
@@ -315,7 +323,8 @@ def test_layer_norm(M, N, dtype, eps=1e-5, device='cuda'):
     assert torch.allclose(y_tri, y_ref, atol=1e-2, rtol=0)
     assert torch.allclose(dx_tri, dx_ref, atol=1e-2, rtol=0)
     assert torch.allclose(db_tri, db_ref, atol=1e-2, rtol=0)
-    assert torch.allclose(dw_tri, dw_ref, atol=1e-2, rtol=0)
+    rtol = 1e-2 if is_hip() else 0.0
+    assert torch.allclose(dw_tri, dw_ref, atol=1e-2, rtol=rtol)
 
 
 @triton.testing.perf_report(
