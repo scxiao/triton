@@ -552,7 +552,6 @@ class JITFunction(KernelInterface[T]):
     def __init__(self, fn, version=None, do_not_specialize=None, debug=None, noinline=None, repr=None,
                  launch_metadata=None):
         do_not_specialize = do_not_specialize if do_not_specialize else []
-
         self.fn = fn
         self.module = fn.__module__
         self.version = version
@@ -571,7 +570,9 @@ class JITFunction(KernelInterface[T]):
 
         # function source code (without decorators)
         self.src = textwrap.dedent(inspect.getsource(fn))
-        self.src = self.src[re.search(r"^def\s+\w+\s*\(", self.src, re.MULTILINE).start():]
+        search_def = re.search(r"^def\s+\w+\s*\(", self.src, re.MULTILINE)
+        if search_def is not None:
+            self.src = self.src[search_def.start():]
         # cache of just-in-time compiled kernels
         self.cache = defaultdict(dict)
         self.hash = None
