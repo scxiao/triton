@@ -37,6 +37,10 @@ def is_hip_mi300():
     target = triton.runtime.driver.active.get_current_target()
     return target.backend == 'hip' and target.arch == 'gfx942'
 
+def get_arch():
+    if is_interpreter():
+        return ""
+    return triton.runtime.driver.active.get_current_target().arch
 
 int_dtypes = ['int8', 'int16', 'int32', 'int64']
 uint_dtypes = ['uint8', 'uint16', 'uint32', 'uint64']
@@ -3108,8 +3112,8 @@ def test_dot(M, N, K, num_warps, col_a, col_b, epilogue, input_precision, in_dty
             pytest.skip("kpack too large for K")
         if not is_hip() and kpack == 2:
             pytest.skip("Skip duplicated tests on nv path")
-        if not is_hip() and (M, N, K) == (16, 16, 8):
-            pytest.skip("Unsupported dot sizes on nv path")
+        if "gfx9" not in get_arch() and (M, N, K) == (16, 16, 8):
+            pytest.skip("Unsupported dot sizes on non-gfx9 path")
 
     torch.backends.cuda.matmul.allow_tf32 = input_precision == "tf32"
 
