@@ -40,7 +40,7 @@ def is_hip_mi300():
 def get_arch():
     if is_interpreter():
         return ""
-    return triton.runtime.driver.active.get_current_target().arch
+    return str(triton.runtime.driver.active.get_current_target().arch)
 
 int_dtypes = ['int8', 'int16', 'int32', 'int64']
 uint_dtypes = ['uint8', 'uint16', 'uint32', 'uint64']
