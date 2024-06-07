@@ -26,12 +26,31 @@ using namespace mlir;
 static bool willIncreaseRegisterPressure(Operation *op) {
   if (isa<triton::gpu::LocalLoadOp>(op))
     return true;
-  auto cvt = dyn_cast<triton::gpu::ConvertLayoutOp>(op);
-  if (!cvt)
-    return false;
-  if (isa<triton::gpu::DotOperandEncodingAttr>(cvt.getType().getEncoding()))
-    return true;
+  if (auto cvt = dyn_cast<triton::gpu::ConvertLayoutOp>(op))
+    return isa<triton::gpu::DotOperandEncodingAttr>(cvt.getType().getEncoding());
   return false;
+}
+
+static bool gatherDFG(Operation *op, SmallVector<Operation *> &dfg) {
+  bool leadsToLoad = false;
+  // BFS (filo)
+  Block *block = op->getBlock();
+  SmallVector<Operation *> oprs;
+  for (auto operand : op->getOperands()) {
+    if (Operation *pop = operand.getDefiningOp()) {
+      if (pop->getBlock() == block) {
+        // must reside in same block
+        oprs.push_back(pop);
+        dfg.push_back(pop);
+        leadsToLoad |= isa<triton::LoadOp>(pop);
+      }
+    }
+  }
+  for (auto *op : oprs) {
+    if (gatherDFG(op, dfg))
+      leadsToLoad = true;
+  }
+  return leadsToLoad;
 }
 
 class TritonAMDGPUReorderInstructionsPass
@@ -52,34 +71,53 @@ public:
     m.walk([&](Operation *op) {
       if (!willIncreaseRegisterPressure(op))
         return;
-      auto user_begin = op->user_begin();
-      auto user_end = op->user_end();
-      if (std::distance(user_begin, user_end) != 1)
+      if (!op->hasOneUse())
         return;
-      if (user_begin->getParentOfType<scf::ForOp>() ==
+      Operation *user = op->getUses().begin()->getOwner();
+      if (user->getParentOfType<scf::ForOp>() ==
           op->getParentOfType<scf::ForOp>())
         return;
-      opToMove.insert({op, *user_begin});
+      opToMove.insert({op, user});
     });
     for (auto &kv : opToMove)
       kv.first->moveBefore(kv.second);
+    opToMove.clear();
     // Move LocalLoadOp and LocalAllocOp immediately after their operands.
     m.walk([&](Operation *op) {
-      if (!isa<triton::gpu::LocalLoadOp, triton::gpu::LocalAllocOp>(op)) {
+      if (!isa<triton::gpu::LocalLoadOp, triton::gpu::LocalAllocOp>(op) ||
+          op->getNumOperands() < 1) {
         return;
       }
-      Operation *argOp = op->getOperand(0).getDefiningOp();
-      if (!argOp)
-        return;
-      moveAfter(op, argOp);
+      if (Operation *argOp = op->getOperand(0).getDefiningOp())
+        moveAfter(op, argOp);
     });
     // Move transpositions just after their definition
-    opToMove.clear();
     m.walk([&](triton::TransOp op) {
       Operation *argOp = op.getSrc().getDefiningOp();
       if (!argOp)
         return;
       moveAfter(op, argOp);
+    });
+    // Move local stores early if it's global load is outside loop
+    m.walk([&](triton::gpu::LocalStoreOp op) {
+      // 0. gather DFG 
+      SmallVector<Operation *> dfg{op};
+      if (!gatherDFG(op, dfg)) {
+        Block *block = op->getBlock();
+        // 1. move to beginning of enclosing block
+        for (auto *op : dfg)
+          op->moveAfter(block, block->begin());
+      }
+    });
+    // Move global loads early (prefetch)
+    m.walk([&](triton::LoadOp op) {
+      // 0. gather DFG
+      SmallVector<Operation *> dfg{op};
+      gatherDFG(op, dfg);
+      Block *block = op->getBlock();
+      // 1. move to beginning of enclosing block
+      for (auto *op : dfg)
+        op->moveAfter(block, block->begin());
     });
     return;
   }
