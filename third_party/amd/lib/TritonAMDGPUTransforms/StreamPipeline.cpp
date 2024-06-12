@@ -252,7 +252,7 @@ loadOpsToIndirectionLevelAndUse(scf::ForOp forOp) {
       };
 
   for (Operation &op : forOp.getBody()->without_terminator()) {
-    if (!isa<tt::DotOp>(op))
+    if (!op.hasTrait<OpTrait::DotLike>())
       continue;
     seen.clear();
     dfs(&op, 0, &op);
@@ -307,7 +307,7 @@ assignMemoryLayouts(llvm::SmallVector<std::tuple<Operation *, int, Operation *>>
         continue;
     }
 
-    if (auto dot = dyn_cast<tt::DotOp>(use)) {
+    if (use->hasTrait<OpTrait::DotLike>()) {
       loadInfo.usedByDot = true;
       loadInfo.sharedEncoding =
           getSharedEncIfAllUsersAreDotEnc(op->getResult(0)).value_or(nullptr);
@@ -370,7 +370,7 @@ scheduleLoads(scf::ForOp forOp, tt::CoarseSchedule &schedule,
 
   // Calculate the stage distance between applicable loads.
   int maxIndirectionLevel = -1;
-  for (auto &[loadOp, dist, use] : loadOpToIndLevelAndUse) {
+  for (auto [loadOp, dist, use] : loadOpToIndLevelAndUse) {
     if (loadToInfo.count(loadOp) == 0)
       continue;
     maxIndirectionLevel = std::max(maxIndirectionLevel, dist);
@@ -597,21 +597,12 @@ static Value createAlloc(scf::ForOp &forOp, Operation *loadOp,
   return alloc;
 }
 
-struct AsyncLoad {
-  AsyncLoad(Operation *loadOp, Value alloc) : loadOp(loadOp), alloc(alloc) {}
-  Operation *loadOp;
-  Value alloc;
-  Value barrier;
-  Operation *waitOp = nullptr;
-  bool isTMALoad = false;
-};
-
 // Convert load ops into their asyn version and apply multi-buffering based on
 // the required number of buffers.
 static SmallVector<Value>
 createAsyncOps(scf::ForOp &forOp, tt::CoarseSchedule &schedule,
                llvm::MapVector<Operation *, LoadInfo> &loadToInfo,
-               SmallVector<Value> &barriers, int numStages) {
+               int numStages) {
   // Calculate the number of buffers needed for each load.
   // TODO pawel: we could do more fine-grained allocation here and
   // allocate only the number of buffers that specific loads need.
@@ -622,7 +613,7 @@ createAsyncOps(scf::ForOp &forOp, tt::CoarseSchedule &schedule,
         return lhs.distToUse < rhs.distToUse;
       })->distToUse;
 
-  SmallVector<AsyncLoad> asyncLoads;
+  SmallVector<std::pair<Operation *, Value>> asyncLoads;
   SmallVector<Value> allocs;
   for (auto &[loadOp, info] : loadToInfo) {
     //assert(info.sharedEncoding && "LoadOp shared encoding not defined.");
@@ -684,9 +675,9 @@ createAsyncOps(scf::ForOp &forOp, tt::CoarseSchedule &schedule,
   // is OK.
   tt::CoarseSchedule::Cluster prefetchCluster = schedule.clusters.newAtBack();
 
-  for (AsyncLoad &asyncLoad : asyncLoads) {
-    if (auto loadOp = dyn_cast<tt::LoadOp>(asyncLoad.loadOp)) {
-      createAsyncCopy(forOp, loadOp, asyncLoad.alloc, insertIdx, extractIdx,
+  for (auto &pair : asyncLoads) {
+    if (auto loadOp = dyn_cast<tt::LoadOp>(pair.first)) {
+      createAsyncCopy(forOp, loadOp, pair.second, insertIdx, extractIdx,
                       schedule, prefetchCluster, loadToInfo, numStages);
     }
   }
@@ -715,10 +706,9 @@ static bool preProcessLoopAndGetSchedule2(
     coarseSchedule.dump();
   });
 
-  SmallVector<Value> barriers;
   // Convert the loads into async loads and create the allocs.
   SmallVector<Value> allocs =
-      createAsyncOps(forOp, coarseSchedule, loadToInfo, barriers, numStages);
+      createAsyncOps(forOp, coarseSchedule, loadToInfo, numStages);
 
   LLVM_DEBUG({
     LDBG("Coarse schedule with async loads:");
