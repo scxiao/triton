@@ -27,7 +27,8 @@ static bool willIncreaseRegisterPressure(Operation *op) {
   if (isa<triton::gpu::LocalLoadOp>(op))
     return true;
   if (auto cvt = dyn_cast<triton::gpu::ConvertLayoutOp>(op))
-    return isa<triton::gpu::DotOperandEncodingAttr>(cvt.getType().getEncoding());
+    return isa<triton::gpu::DotOperandEncodingAttr>(
+        cvt.getType().getEncoding());
   return false;
 }
 
@@ -41,7 +42,8 @@ static bool isDescendent(Operation *op, Block *block) {
   return false;
 }
 
-static bool gatherDFG(Operation *op, Block *block, SmallVector<Operation *> &dfg) {
+static bool gatherDFG(Operation *op, Block *block,
+                      SmallVector<Operation *> &dfg) {
   // BFS (filo)
   SmallVector<Operation *> oprs;
   bool leadsToLoad = false;
@@ -132,7 +134,7 @@ public:
       moveOps.push_back(op);
     });
     for (auto op : moveOps) {
-      // 0. gather DFG 
+      // 0. gather DFG
       Block *block = op->getBlock();
       SmallVector<Operation *> dfg{op};
       bool leadsToLoad = gatherDFG(op, block, dfg);

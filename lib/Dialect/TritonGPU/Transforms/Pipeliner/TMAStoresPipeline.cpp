@@ -1,5 +1,5 @@
-#include "triton/Dialect/TritonGPU/Transforms/Schedule.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "triton/Dialect/TritonGPU/Transforms/Schedule.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
 
 using namespace mlir;

@@ -1,6 +1,3 @@
-#include "triton/Dialect/TritonGPU/Transforms/PipelineExpander.h"
-#include "triton/Dialect/TritonGPU/Transforms/PipeliningUtility.h"
-#include "triton/Dialect/TritonGPU/Transforms/Schedule.h"
 #include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/IRMapping.h"
@@ -14,6 +11,9 @@
 #include "triton/Dialect/TritonGPU/IR/Attributes.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h"
+#include "triton/Dialect/TritonGPU/Transforms/PipelineExpander.h"
+#include "triton/Dialect/TritonGPU/Transforms/PipeliningUtility.h"
+#include "triton/Dialect/TritonGPU/Transforms/Schedule.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
 #include "llvm/ADT/MapVector.h"
@@ -686,7 +686,8 @@ static void scheduleDistanceOneDependencies(scf::ForOp forOp,
   };
 
   // Mapping from the cluster to the cluster before it.
-  DenseMap<tt::CoarseSchedule::Cluster *, tt::CoarseSchedule::Cluster> dist1Cluster;
+  DenseMap<tt::CoarseSchedule::Cluster *, tt::CoarseSchedule::Cluster>
+      dist1Cluster;
   for (auto &op : forOp.getBody()->without_terminator()) {
     if (schedule.count(&op) == 0)
       continue;
@@ -721,10 +722,10 @@ static void scheduleDistanceOneDependencies(scf::ForOp forOp,
   }
 }
 
-static void scheduleRemainingToLastStage(scf::ForOp forOp,
-                                         tt::CoarseSchedule &schedule,
-                                         tt::CoarseSchedule::Cluster afterPrologue,
-                                         int numStages) {
+static void
+scheduleRemainingToLastStage(scf::ForOp forOp, tt::CoarseSchedule &schedule,
+                             tt::CoarseSchedule::Cluster afterPrologue,
+                             int numStages) {
   // Assign the rest of the ops to the last stage.
   // Take care of the ordering of the ops - uses cannot be scheduled to the
   // cluster before the definition.

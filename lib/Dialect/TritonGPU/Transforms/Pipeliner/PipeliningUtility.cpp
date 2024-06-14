@@ -119,4 +119,3 @@ void mlir::triton::addOps(
     schedule.emplace_back(&op, stage);
   }
 }
-

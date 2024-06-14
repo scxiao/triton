@@ -137,8 +137,8 @@ static void createAsyncCopy(scf::ForOp &forOp, tt::LoadOp loadOp, Value alloc,
       alloc.erase();
     }
 
-    auto sharedLoad = builder.create<ttg::LocalLoadOp>(
-        loc, loadOp.getType(), viewLoad);
+    auto sharedLoad =
+        builder.create<ttg::LocalLoadOp>(loc, loadOp.getType(), viewLoad);
     auto result = sharedLoad->getResults();
 
     // Create a select for non-zero other values as they are not handled by
@@ -506,7 +506,8 @@ static void scheduleDistanceOneDependencies(scf::ForOp forOp,
   };
 
   // Mapping from the cluster to the cluster before it.
-  DenseMap<tt::CoarseSchedule::Cluster *, tt::CoarseSchedule::Cluster> dist1Cluster;
+  DenseMap<tt::CoarseSchedule::Cluster *, tt::CoarseSchedule::Cluster>
+      dist1Cluster;
   for (auto &op : forOp.getBody()->without_terminator()) {
     if (schedule.count(&op) == 0)
       continue;
@@ -541,10 +542,10 @@ static void scheduleDistanceOneDependencies(scf::ForOp forOp,
   }
 }
 
-static void scheduleRemainingToLastStage(scf::ForOp forOp,
-                                         tt::CoarseSchedule &schedule,
-                                         tt::CoarseSchedule::Cluster afterPrologue,
-                                         int numStages) {
+static void
+scheduleRemainingToLastStage(scf::ForOp forOp, tt::CoarseSchedule &schedule,
+                             tt::CoarseSchedule::Cluster afterPrologue,
+                             int numStages) {
   // Assign the rest of the ops to the last stage.
   // Take care of the ordering of the ops - uses cannot be scheduled to the
   // cluster before the definition.
@@ -616,7 +617,7 @@ createAsyncOps(scf::ForOp &forOp, tt::CoarseSchedule &schedule,
   SmallVector<std::pair<Operation *, Value>> asyncLoads;
   SmallVector<Value> allocs;
   for (auto &[loadOp, info] : loadToInfo) {
-    //assert(info.sharedEncoding && "LoadOp shared encoding not defined.");
+    // assert(info.sharedEncoding && "LoadOp shared encoding not defined.");
     if (info.sharedEncoding) {
       Value alloc = createAlloc(forOp, loadOp, info.sharedEncoding, numBuffers);
       assert(alloc && "Failed to create alloc for the async load.");
@@ -690,8 +691,9 @@ createAsyncOps(scf::ForOp &forOp, tt::CoarseSchedule &schedule,
   return allocs;
 }
 
-static bool preProcessLoopAndGetSchedule2(
-    scf::ForOp &forOp, int numStages, mlir::triton::PipeliningOption &options) {
+static bool
+preProcessLoopAndGetSchedule2(scf::ForOp &forOp, int numStages,
+                              mlir::triton::PipeliningOption &options) {
   // Schedule the loads and root ops (dot ops) in the loop. This will give us
   // a scaffold for the final schedule.
   DenseSet<Operation *> rootUsers;
@@ -828,14 +830,13 @@ static bool pipelineLoop(scf::ForOp forOp, int numStages) {
 namespace {
 struct PipelinePass : public TritonAMDGPUStreamPipelineBase<PipelinePass> {
   PipelinePass() = default;
-  PipelinePass(int32_t numStages) {
-    this->numStages = numStages;
-  }
+  PipelinePass(int32_t numStages) { this->numStages = numStages; }
 
   int getNumStagesOrDefault(scf::ForOp forOp) {
     // Use the attribute attached to the loop if it exists otherwise use the
     // global control.
-    if (auto attr = forOp->getAttrOfType<IntegerAttr>(mlir::triton::kNumStagesAttrName))
+    if (auto attr =
+            forOp->getAttrOfType<IntegerAttr>(mlir::triton::kNumStagesAttrName))
       return attr.getInt();
     return numStages;
   }

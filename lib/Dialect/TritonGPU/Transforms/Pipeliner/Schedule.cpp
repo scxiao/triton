@@ -1,5 +1,5 @@
-#include "triton/Dialect/TritonGPU/Transforms/PipeliningUtility.h"
 #include "triton/Dialect/TritonGPU/Transforms/Schedule.h"
+#include "triton/Dialect/TritonGPU/Transforms/PipeliningUtility.h"
 
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/TypeUtilities.h"
@@ -45,7 +45,7 @@ void tt::CoarseSchedule::insertDepsOfOp(Operation *op, int stage,
 SmallVector<std::tuple<Operation *, int, tt::CoarseSchedule::Cluster>>
 tt::CoarseSchedule::getOpsInOrder(scf::ForOp forOp) {
   SmallVector<SmallVector<std::tuple<Operation *, int, Cluster>>, 8>
-    orderClusters(clusters.size());
+      orderClusters(clusters.size());
   for (auto &op : forOp.getBody()->without_terminator()) {
     if (opToStageAndCluster.count(&op) == 0) {
       continue;
@@ -56,9 +56,8 @@ tt::CoarseSchedule::getOpsInOrder(scf::ForOp forOp) {
     assert(clusterId == std::distance(clusters.begin(),
                                       opToStageAndCluster[&op].second) &&
            "Cluster ID mismatch!");
-    orderClusters[clusterId].push_back(
-                                       make_tuple(&op, opToStageAndCluster[&op].first,
-                                                  opToStageAndCluster[&op].second));
+    orderClusters[clusterId].push_back(make_tuple(
+        &op, opToStageAndCluster[&op].first, opToStageAndCluster[&op].second));
   }
   SmallVector<std::tuple<Operation *, int, Cluster>> opsInOrder;
   for (int i = 0; i < orderClusters.size(); i++) {
@@ -72,8 +71,8 @@ tt::CoarseSchedule::getOpsInOrder(scf::ForOp forOp) {
 
 std::vector<std::pair<Operation *, unsigned>>
 tt::CoarseSchedule::createFinalSchedule(scf::ForOp forOp) {
-  SmallVector<std::tuple<Operation *, int, tt::CoarseSchedule::Cluster>> opsInOrder =
-    getOpsInOrder(forOp);
+  SmallVector<std::tuple<Operation *, int, tt::CoarseSchedule::Cluster>>
+      opsInOrder = getOpsInOrder(forOp);
   std::vector<std::pair<Operation *, unsigned>> schedule;
   for (auto [op, stage, cluster] : opsInOrder)
     schedule.push_back({op, stage});
@@ -82,13 +81,12 @@ tt::CoarseSchedule::createFinalSchedule(scf::ForOp forOp) {
 
 void tt::CoarseSchedule::dump() {
   for (int i = 0; i < numStages; i++) {
-    llvm::dbgs() << "- Ops in stage " << i << "\n";
+    llvm::dbgs() << "\n---- Ops in stage " << i << "\n";
     for (auto &[op, stageAndCluster] : opToStageAndCluster) {
       if (i == stageAndCluster.first) {
-        llvm::dbgs() << " cluster: " << *stageAndCluster.second << ":\n\t" << *op << "\n";
+        llvm::dbgs() << "        cluster: " << *stageAndCluster.second
+                     << ":\n\t" << *op << "\n";
       }
     }
   }
 }
-
-
