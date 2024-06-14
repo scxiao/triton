@@ -31,23 +31,47 @@ static bool willIncreaseRegisterPressure(Operation *op) {
   return false;
 }
 
-static bool gatherDFG(Operation *op, SmallVector<Operation *> &dfg) {
-  bool leadsToLoad = false;
+static bool isDescendent(Operation *op, Block *block) {
+  Block *b = op->getBlock();
+  while (b != nullptr) {
+    if (b == block)
+      return true;
+    b = b->getParentOp()->getBlock();
+  }
+  return false;
+}
+
+static bool gatherDFG(Operation *op, Block *block, SmallVector<Operation *> &dfg) {
   // BFS (filo)
-  Block *block = op->getBlock();
   SmallVector<Operation *> oprs;
+  bool leadsToLoad = false;
   for (auto operand : op->getOperands()) {
     if (Operation *pop = operand.getDefiningOp()) {
-      if (pop->getBlock() == block) {
-        // must reside in same block
+      if (isDescendent(pop, block)) {
+        // only move ops that reside in same block
+        if (pop->getBlock() == block)
+          dfg.push_back(pop);
         oprs.push_back(pop);
-        dfg.push_back(pop);
         leadsToLoad |= isa<triton::LoadOp>(pop);
+      } else {
+        // only operands from current block or ancestor
+        assert(isDescendent(block->getParentOp(), pop->getBlock()));
       }
     }
   }
+  // check sub-regions
+  for (auto &subregion : op->getRegions()) {
+    for (auto &subblock : subregion) {
+      for (auto &sop : subblock) {
+        if (gatherDFG(&sop, block, dfg))
+          leadsToLoad = true;
+      }
+    }
+  }
+
+  // process next level ops
   for (auto *op : oprs) {
-    if (gatherDFG(op, dfg))
+    if (gatherDFG(op, block, dfg))
       leadsToLoad = true;
   }
   return leadsToLoad;
@@ -98,28 +122,26 @@ public:
         return;
       moveAfter(op, argOp);
     });
-    // Move local stores early if it's global load is outside loop
+    SmallVector<Operation *> moveOps;
     m.walk([&](triton::gpu::LocalStoreOp op) {
+      // Move local stores early if it's global load is outside loop
+      moveOps.push_back(op);
+    });
+    m.walk([&](triton::LoadOp op) {
+      // Move global loads early (prefetch)
+      moveOps.push_back(op);
+    });
+    for (auto op : moveOps) {
       // 0. gather DFG 
+      Block *block = op->getBlock();
       SmallVector<Operation *> dfg{op};
-      if (!gatherDFG(op, dfg)) {
-        Block *block = op->getBlock();
+      bool leadsToLoad = gatherDFG(op, block, dfg);
+      if (!isa<triton::gpu::LocalStoreOp>(op) || !leadsToLoad) {
         // 1. move to beginning of enclosing block
         for (auto *op : dfg)
           op->moveAfter(block, block->begin());
       }
-    });
-    // Move global loads early (prefetch)
-    m.walk([&](triton::LoadOp op) {
-      // 0. gather DFG
-      SmallVector<Operation *> dfg{op};
-      gatherDFG(op, dfg);
-      Block *block = op->getBlock();
-      // 1. move to beginning of enclosing block
-      for (auto *op : dfg)
-        op->moveAfter(block, block->begin());
-    });
-    return;
+    }
   }
 };
 
