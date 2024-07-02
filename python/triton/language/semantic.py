@@ -1325,7 +1325,7 @@ def dot(lhs: tl.tensor, rhs: tl.tensor, acc: tl.tensor, input_precision: Optiona
     def support_small_matrices():
         if not hasattr(builder.options, "arch"):
             return False
-        archStr = builder.options["arch"]
+        archStr = builder.options.arch
         return "gfx9" in archStr
 
     def assert_dtypes_valid(lhs_dtype, rhs_dtype, options):
