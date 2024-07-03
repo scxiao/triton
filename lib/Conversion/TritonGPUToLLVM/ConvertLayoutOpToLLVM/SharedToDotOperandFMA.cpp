@@ -32,30 +32,6 @@ getThreadIds(Value threadId, ArrayRef<unsigned int> shapePerCTATile,
   return threadIds;
 }
 
-// Get shapePerCTATile for M or N axis.
-int getShapePerCTATileForMN(BlockedEncodingAttr layout, bool isM) {
-  auto order = layout.getOrder();
-  auto shapePerCTATile = getShapePerCTATile(layout);
-
-  int mShapePerCTATile =
-      order[0] == 1 ? shapePerCTATile[order[1]] : shapePerCTATile[order[0]];
-  int nShapePerCTATile =
-      order[0] == 0 ? shapePerCTATile[order[1]] : shapePerCTATile[order[0]];
-  return isM ? mShapePerCTATile : nShapePerCTATile;
-}
-
-// Get sizePerThread for M or N axis.
-int getSizePerThreadForMN(BlockedEncodingAttr layout, bool isM) {
-  auto order = layout.getOrder();
-  auto sizePerThread = getSizePerThread(layout);
-
-  int mSizePerThread =
-      order[0] == 1 ? sizePerThread[order[1]] : sizePerThread[order[0]];
-  int nSizePerThread =
-      order[0] == 0 ? sizePerThread[order[1]] : sizePerThread[order[0]];
-  return isM ? mSizePerThread : nSizePerThread;
-}
-
 Value getStructFromValueTable(ArrayRef<Value> vals,
                               ConversionPatternRewriter &rewriter, Location loc,
                               const LLVMTypeConverter *typeConverter,
@@ -89,11 +65,10 @@ ValueTable getValueTableFromStruct(Value val, int K, int n0, int shapePerCTA,
   return res;
 }
 
-Value loadAFMA(Value A, Value llA, BlockedEncodingAttr dLayout, Value thread,
-               Location loc, const LLVMTypeConverter *typeConverter,
-               ConversionPatternRewriter &rewriter) {
-  const int NonKDim = 0;
-  const int kDim = 1;
+Value loadFMAOp(Value A, Value llA, BlockedEncodingAttr dLayout, Value thread,
+                Location loc, const LLVMTypeConverter *typeConverter,
+                ConversionPatternRewriter &rewriter, const int kDim) {
+  const int nonKDim = kDim == 0 ? 1 : 0;
   auto aTensorTy = cast<MemDescType>(A.getType());
   auto aLayout = cast<SharedEncodingAttr>(aTensorTy.getEncoding());
   auto aShapePerCTA = getShapePerCTA(aTensorTy);
@@ -103,20 +78,20 @@ Value loadAFMA(Value A, Value llA, BlockedEncodingAttr dLayout, Value thread,
   auto aSmem = getSharedMemoryObjectFromStruct(
       loc, llA, typeConverter->convertType(aTensorTy.getElementType()),
       rewriter);
-  Value strideAM = aSmem.strides[NonKDim];
+  Value strideAM = aSmem.strides[nonKDim];
   Value strideAK = aSmem.strides[kDim];
   int K = aShapePerCTA[kDim];
-  int M = aShapePerCTA[NonKDim];
+  int M = aShapePerCTA[nonKDim];
 
   auto shapePerCTATile = getShapePerCTATile(dLayout);
   auto sizePerThread = getSizePerThread(dLayout);
 
-  Value mTileSize = i32_val(sizePerThread[NonKDim]);
+  Value mTileSize = i32_val(sizePerThread[nonKDim]);
 
   // threadId in blocked layout
   auto threadIds = getThreadIds(thread, shapePerCTATile, sizePerThread, order,
                                 rewriter, loc);
-  Value threadIdM = threadIds[NonKDim];
+  Value threadIdM = threadIds[nonKDim];
   Value nonKTileOffset = mul(threadIdM, mTileSize);
 
   auto elemTy = typeConverter->convertType(aTensorTy.getElementType());
@@ -124,8 +99,8 @@ Value loadAFMA(Value A, Value llA, BlockedEncodingAttr dLayout, Value thread,
 
   SmallVector<Value> vas;
 
-  int mShapePerCTATile = getShapePerCTATileForMN(dLayout, true /*isM*/);
-  int mSizePerThread = getSizePerThreadForMN(dLayout, true /*isM*/);
+  int mShapePerCTATile = shapePerCTATile[nonKDim];
+  int mSizePerThread = sizePerThread[nonKDim];
 
   for (unsigned k = 0; k < K; ++k)
     for (unsigned m = 0; m < M; m += mShapePerCTATile)
@@ -143,69 +118,16 @@ Value loadAFMA(Value A, Value llA, BlockedEncodingAttr dLayout, Value thread,
   return getStructFromValueTable(vas, rewriter, loc, typeConverter, elemTy);
 }
 
-Value loadBFMA(Value B, Value llB, BlockedEncodingAttr dLayout, Value thread,
-               Location loc, const LLVMTypeConverter *typeConverter,
-               ConversionPatternRewriter &rewriter) {
-  auto bTensorTy = cast<MemDescType>(B.getType());
-  auto bLayout = cast<SharedEncodingAttr>(bTensorTy.getEncoding());
-  auto bShapePerCTA = getShapePerCTA(bTensorTy);
-
-  auto order = dLayout.getOrder();
-
-  auto bSmem = getSharedMemoryObjectFromStruct(
-      loc, llB, typeConverter->convertType(bTensorTy.getElementType()),
-      rewriter);
-  Value strideBN = bSmem.strides[1];
-  Value strideBK = bSmem.strides[0];
-  int K = bShapePerCTA[0];
-  int N = bShapePerCTA[1];
-
-  auto shapePerCTATile = getShapePerCTATile(dLayout);
-  auto sizePerThread = getSizePerThread(dLayout);
-
-  Value _0 = i32_val(0);
-
-  Value nContig = i32_val(sizePerThread[order[0]]);
-
-  // threadId in blocked layout
-  auto threadIds = getThreadIds(thread, shapePerCTATile, sizePerThread, order,
-                                rewriter, loc);
-  Value threadIdN = threadIds[1];
-
-  Value offBK = _0;
-  Value offBN = mul(threadIdN, nContig);
-  Value bOff = add(mul(offBK, strideBK), mul(offBN, strideBN));
-  auto elemTy = typeConverter->convertType(bTensorTy.getElementType());
-
-  Type ptrTy = ptr_ty(rewriter.getContext(), 3);
-  Value bPtr = gep(ptrTy, elemTy, bSmem.base, bOff);
-
-  SmallVector<Value> vbs;
-
-  int nShapePerCTATile = getShapePerCTATileForMN(dLayout, false /*isM*/);
-  int nSizePerThread = getSizePerThreadForMN(dLayout, false /*isM*/);
-
-  for (unsigned k = 0; k < K; ++k)
-    for (unsigned n = 0; n < N; n += nShapePerCTATile)
-      for (unsigned nn = 0; nn < nSizePerThread; ++nn) {
-        Value offset =
-            add(mul(i32_val(n + nn), strideBN), mul(i32_val(k), strideBK));
-        Value pb = gep(ptrTy, elemTy, bPtr, offset);
-        Value vb = load(elemTy, pb);
-        vbs.emplace_back(vb);
-      }
-
-  return getStructFromValueTable(vbs, rewriter, loc, typeConverter, elemTy);
-}
-
 namespace SharedToDotOperandFMA {
 Value convertLayout(int opIdx, Value val, Value llVal,
                     BlockedEncodingAttr dLayout, Value thread, Location loc,
                     const LLVMTypeConverter *typeConverter,
                     ConversionPatternRewriter &rewriter) {
   if (opIdx == 0)
-    return loadAFMA(val, llVal, dLayout, thread, loc, typeConverter, rewriter);
+    return loadFMAOp(val, llVal, dLayout, thread, loc, typeConverter, rewriter,
+                     1);
   else
-    return loadBFMA(val, llVal, dLayout, thread, loc, typeConverter, rewriter);
+    return loadFMAOp(val, llVal, dLayout, thread, loc, typeConverter, rewriter,
+                     0);
 }
 } // namespace SharedToDotOperandFMA
