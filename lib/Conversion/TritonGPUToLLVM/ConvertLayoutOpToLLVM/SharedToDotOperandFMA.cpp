@@ -96,18 +96,13 @@ Value loadAFMA(Value A, Value llA, BlockedEncodingAttr dLayout, Value thread,
   auto aLayout = cast<SharedEncodingAttr>(aTensorTy.getEncoding());
   auto aShapePerCTA = getShapePerCTA(aTensorTy);
 
-  auto aOrder = aLayout.getOrder();
   auto order = dLayout.getOrder();
-
-  bool isARow = aOrder[0] == 1;
 
   auto aSmem = getSharedMemoryObjectFromStruct(
       loc, llA, typeConverter->convertType(aTensorTy.getElementType()),
       rewriter);
   Value strideAM = aSmem.strides[0];
   Value strideAK = aSmem.strides[1];
-  Value strideA0 = isARow ? strideAK : strideAM;
-  Value strideA1 = isARow ? strideAM : strideAK;
   int K = aShapePerCTA[1];
   int M = aShapePerCTA[0];
 
@@ -123,9 +118,10 @@ Value loadAFMA(Value A, Value llA, BlockedEncodingAttr dLayout, Value thread,
                                 rewriter, loc);
   Value threadIdM = threadIds[0];
 
-  Value offA0 = isARow ? _0 : mul(threadIdM, mContig);
-  Value offA1 = isARow ? mul(threadIdM, mContig) : _0;
-  Value aOff = add(mul(offA0, strideA0), mul(offA1, strideA1));
+  Value offAM = mul(threadIdM, mContig);
+  Value offAK = _0;
+
+  Value aOff = add(mul(offAM, strideAM), mul(offAK, strideAK));
   auto elemTy = typeConverter->convertType(aTensorTy.getElementType());
 
   Type ptrTy = ptr_ty(rewriter.getContext(), 3);
@@ -156,18 +152,13 @@ Value loadBFMA(Value B, Value llB, BlockedEncodingAttr dLayout, Value thread,
   auto bLayout = cast<SharedEncodingAttr>(bTensorTy.getEncoding());
   auto bShapePerCTA = getShapePerCTA(bTensorTy);
 
-  auto bOrder = bLayout.getOrder();
   auto order = dLayout.getOrder();
-
-  bool isBRow = bOrder[0] == 1;
 
   auto bSmem = getSharedMemoryObjectFromStruct(
       loc, llB, typeConverter->convertType(bTensorTy.getElementType()),
       rewriter);
   Value strideBN = bSmem.strides[1];
   Value strideBK = bSmem.strides[0];
-  Value strideB0 = isBRow ? strideBN : strideBK;
-  Value strideB1 = isBRow ? strideBK : strideBN;
   int K = bShapePerCTA[0];
   int N = bShapePerCTA[1];
 
@@ -183,9 +174,9 @@ Value loadBFMA(Value B, Value llB, BlockedEncodingAttr dLayout, Value thread,
                                 rewriter, loc);
   Value threadIdN = threadIds[1];
 
-  Value offB0 = isBRow ? mul(threadIdN, nContig) : _0;
-  Value offB1 = isBRow ? _0 : mul(threadIdN, nContig);
-  Value bOff = add(mul(offB0, strideB0), mul(offB1, strideB1));
+  Value offBK = _0;
+  Value offBN = mul(threadIdN, nContig);
+  Value bOff = add(mul(offBK, strideBK), mul(offBN, strideBN));
   auto elemTy = typeConverter->convertType(bTensorTy.getElementType());
 
   Type ptrTy = ptr_ty(rewriter.getContext(), 3);
