@@ -108,7 +108,6 @@ Value loadAFMA(Value A, Value llA, BlockedEncodingAttr dLayout, Value thread,
   Value strideAK = aSmem.strides[1];
   Value strideA0 = isARow ? strideAK : strideAM;
   Value strideA1 = isARow ? strideAM : strideAK;
-  int aNumPtr = 8;
   int K = aShapePerCTA[1];
   int M = aShapePerCTA[0];
 
@@ -126,16 +125,11 @@ Value loadAFMA(Value A, Value llA, BlockedEncodingAttr dLayout, Value thread,
 
   Value offA0 = isARow ? _0 : mul(threadIdM, mContig);
   Value offA1 = isARow ? mul(threadIdM, mContig) : _0;
-  SmallVector<Value> aOff(aNumPtr);
-  for (int i = 0; i < aNumPtr; ++i) {
-    aOff[i] = add(mul(offA0, strideA0), mul(offA1, strideA1));
-  }
+  Value aOff = add(mul(offA0, strideA0), mul(offA1, strideA1));
   auto elemTy = typeConverter->convertType(aTensorTy.getElementType());
 
   Type ptrTy = ptr_ty(rewriter.getContext(), 3);
-  SmallVector<Value> aPtrs(aNumPtr);
-  for (int i = 0; i < aNumPtr; ++i)
-    aPtrs[i] = gep(ptrTy, elemTy, aSmem.base, aOff[i]);
+  Value aPtr = gep(ptrTy, elemTy, aSmem.base, aOff);
 
   SmallVector<Value> vas;
 
@@ -147,7 +141,7 @@ Value loadAFMA(Value A, Value llA, BlockedEncodingAttr dLayout, Value thread,
       for (unsigned mm = 0; mm < mSizePerThread; ++mm) {
         Value offset =
             add(mul(i32_val(m + mm), strideAM), mul(i32_val(k), strideAK));
-        Value pa = gep(ptrTy, elemTy, aPtrs[0], offset);
+        Value pa = gep(ptrTy, elemTy, aPtr, offset);
         Value va = load(elemTy, pa);
         vas.emplace_back(va);
       }
@@ -174,7 +168,6 @@ Value loadBFMA(Value B, Value llB, BlockedEncodingAttr dLayout, Value thread,
   Value strideBK = bSmem.strides[0];
   Value strideB0 = isBRow ? strideBN : strideBK;
   Value strideB1 = isBRow ? strideBK : strideBN;
-  int bNumPtr = 8;
   int K = bShapePerCTA[0];
   int N = bShapePerCTA[1];
 
@@ -192,16 +185,11 @@ Value loadBFMA(Value B, Value llB, BlockedEncodingAttr dLayout, Value thread,
 
   Value offB0 = isBRow ? mul(threadIdN, nContig) : _0;
   Value offB1 = isBRow ? _0 : mul(threadIdN, nContig);
-  SmallVector<Value> bOff(bNumPtr);
-  for (int i = 0; i < bNumPtr; ++i) {
-    bOff[i] = add(mul(offB0, strideB0), mul(offB1, strideB1));
-  }
+  Value bOff = add(mul(offB0, strideB0), mul(offB1, strideB1));
   auto elemTy = typeConverter->convertType(bTensorTy.getElementType());
 
   Type ptrTy = ptr_ty(rewriter.getContext(), 3);
-  SmallVector<Value> bPtrs(bNumPtr);
-  for (int i = 0; i < bNumPtr; ++i)
-    bPtrs[i] = gep(ptrTy, elemTy, bSmem.base, bOff[i]);
+  Value bPtr = gep(ptrTy, elemTy, bSmem.base, bOff);
 
   SmallVector<Value> vbs;
 
@@ -213,7 +201,7 @@ Value loadBFMA(Value B, Value llB, BlockedEncodingAttr dLayout, Value thread,
       for (unsigned nn = 0; nn < nSizePerThread; ++nn) {
         Value offset =
             add(mul(i32_val(n + nn), strideBN), mul(i32_val(k), strideBK));
-        Value pb = gep(ptrTy, elemTy, bPtrs[0], offset);
+        Value pb = gep(ptrTy, elemTy, bPtr, offset);
         Value vb = load(elemTy, pb);
         vbs.emplace_back(vb);
       }
