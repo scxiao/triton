@@ -92,6 +92,8 @@ ValueTable getValueTableFromStruct(Value val, int K, int n0, int shapePerCTA,
 Value loadAFMA(Value A, Value llA, BlockedEncodingAttr dLayout, Value thread,
                Location loc, const LLVMTypeConverter *typeConverter,
                ConversionPatternRewriter &rewriter) {
+  const int NonKDim = 0;
+  const int kDim = 1;
   auto aTensorTy = cast<MemDescType>(A.getType());
   auto aLayout = cast<SharedEncodingAttr>(aTensorTy.getEncoding());
   auto aShapePerCTA = getShapePerCTA(aTensorTy);
@@ -101,31 +103,24 @@ Value loadAFMA(Value A, Value llA, BlockedEncodingAttr dLayout, Value thread,
   auto aSmem = getSharedMemoryObjectFromStruct(
       loc, llA, typeConverter->convertType(aTensorTy.getElementType()),
       rewriter);
-  Value strideAM = aSmem.strides[0];
-  Value strideAK = aSmem.strides[1];
-  int K = aShapePerCTA[1];
-  int M = aShapePerCTA[0];
+  Value strideAM = aSmem.strides[NonKDim];
+  Value strideAK = aSmem.strides[kDim];
+  int K = aShapePerCTA[kDim];
+  int M = aShapePerCTA[NonKDim];
 
   auto shapePerCTATile = getShapePerCTATile(dLayout);
   auto sizePerThread = getSizePerThread(dLayout);
 
-  Value _0 = i32_val(0);
-
-  Value mContig = i32_val(sizePerThread[order[1]]);
+  Value mTileSize = i32_val(sizePerThread[NonKDim]);
 
   // threadId in blocked layout
   auto threadIds = getThreadIds(thread, shapePerCTATile, sizePerThread, order,
                                 rewriter, loc);
-  Value threadIdM = threadIds[0];
+  Value threadIdM = threadIds[NonKDim];
+  Value nonKTileOffset = mul(threadIdM, mTileSize);
 
-  Value offAM = mul(threadIdM, mContig);
-  Value offAK = _0;
-
-  Value aOff = add(mul(offAM, strideAM), mul(offAK, strideAK));
   auto elemTy = typeConverter->convertType(aTensorTy.getElementType());
-
   Type ptrTy = ptr_ty(rewriter.getContext(), 3);
-  Value aPtr = gep(ptrTy, elemTy, aSmem.base, aOff);
 
   SmallVector<Value> vas;
 
@@ -135,9 +130,12 @@ Value loadAFMA(Value A, Value llA, BlockedEncodingAttr dLayout, Value thread,
   for (unsigned k = 0; k < K; ++k)
     for (unsigned m = 0; m < M; m += mShapePerCTATile)
       for (unsigned mm = 0; mm < mSizePerThread; ++mm) {
-        Value offset =
-            add(mul(i32_val(m + mm), strideAM), mul(i32_val(k), strideAK));
-        Value pa = gep(ptrTy, elemTy, aPtr, offset);
+        Value rawMOffset = add(nonKTileOffset, i32_val(m + mm));
+        Value rawKOffset = i32_val(k);
+        Value aOffM = mul(urem(rawMOffset, i32_val(M)), strideAM);
+        Value aOffK = mul(urem(rawKOffset, i32_val(K)), strideAK);
+        Value offset = add(aOffM, aOffK);
+        Value pa = gep(ptrTy, elemTy, aSmem.base, offset);
         Value va = load(elemTy, pa);
         vas.emplace_back(va);
       }
