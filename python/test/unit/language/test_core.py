@@ -5171,6 +5171,12 @@ def test_dot_max_num_imprecise_acc(M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, in_type_s
     check_type_supported(in_type_str, device)
     A = numpy_random((M, K), dtype_str=in_type_str)
     B = numpy_random((K, N), dtype_str=in_type_str)
+    for i in range(0, M):
+        for k in range(0, K):
+            A[i, k] = 0
+    for j in range(0, N):
+        for k in range(0, K):
+            B[k, j] = 0
     C = torch.empty((M, N), dtype=torch.int32, device=device)
     num_warps = 8
     a = to_triton(A, device=device, dst_type=in_type_str)
