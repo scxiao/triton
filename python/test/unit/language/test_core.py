@@ -3074,8 +3074,8 @@ def convert_fp8_to_fp32(x, device, dtype_str):
      for input_precision in ["ieee" if is_hip() else "tf32"]
      for col_a in [True, False]
      for col_b in [True, False]
-     for in_dtype, out_dtype in [('int8', 'int8'), ('float16', 'float16'), ('float16', 'float32'), ('float32',
-                                                                                                    'float32')]
+     for in_dtype, out_dtype in [('int8', 'int8'), ('int8', 'int32'), ('float16', 'float16'), ('float16', 'float32'),
+                                 ('float32', 'float32')]
      for kpack in [1, 2 if is_hip() else 1]] + [(64, 64, 64, 4, col_a, col_b, 'none', 'ieee', 'float32', 'float32', 1)
                                                 for col_a in [True, False]
                                                 for col_b in [True, False]] +
