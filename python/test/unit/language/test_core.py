@@ -5182,7 +5182,7 @@ def test_dot_max_num_imprecise_acc(M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, in_type_s
     th_a = f8_to_f16(torch_a, in_type_str)
     torch_b = torch.from_numpy(B).to(device=device)
     th_b = f8_to_f16(torch_b, in_type_str)
-    ref_out = torch.matmul(th_a, th_b).to(torch.float32)
+    ref_out = torch.matmul(th_a, th_b).to(torch.int32)
     if in_type_str == 'float8e4nv':
         torch.testing.assert_close(ref_out, C, rtol=0.01, atol=0.01)
     else:
