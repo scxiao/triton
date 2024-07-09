@@ -5173,7 +5173,7 @@ def test_dot_max_num_imprecise_acc(M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, in_type_s
     B = numpy_random((K, N), dtype_str=in_type_str)
     for i in range(0, M):
         for k in range(0, K):
-            A[i, k] = i
+            A[i, k] = (i + k) % 128
     for j in range(0, N):
         for k in range(0, K):
             B[k, j] = 0 if j != k else 1
