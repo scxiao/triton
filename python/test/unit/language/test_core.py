@@ -5155,8 +5155,8 @@ def matmul_kernel(  #
 
 
 @pytest.mark.interpreter
-@pytest.mark.parametrize("M, N, K", [(128, 256, 256)])
-@pytest.mark.parametrize("BLOCK_M, BLOCK_N, BLOCK_K", [(128, 256, 128), (64, 64, 64)])
+@pytest.mark.parametrize("M, N, K", [(128, 256, 256), (128, 128, 128), (128, 128, 64), (8, 8, 64), (32, 32, 32)])
+@pytest.mark.parametrize("BLOCK_M, BLOCK_N, BLOCK_K", [(128, 256, 128), (128, 128, 128), (128, 128, 64), (64, 64, 64), (8, 8, 64)])
 @pytest.mark.parametrize("in_type_str", ['int8', 'float8e5', 'float8e4nv', 'float8e4b15'])
 @pytest.mark.parametrize("low_precision_acc", [0, 32, 64, 128])
 def test_dot_max_num_imprecise_acc(M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, in_type_str, low_precision_acc, device):
@@ -5171,12 +5171,12 @@ def test_dot_max_num_imprecise_acc(M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, in_type_s
     check_type_supported(in_type_str, device)
     A = numpy_random((M, K), dtype_str=in_type_str)
     B = numpy_random((K, N), dtype_str=in_type_str)
-    for i in range(0, M):
-        for k in range(0, K):
-            A[i, k] = (i + k) % 128
-    for j in range(0, N):
-        for k in range(0, K):
-            B[k, j] = 0 if j != k else 1
+    #for i in range(0, M):
+    #    for k in range(0, K):
+    #        A[i, k] = k
+    #for j in range(0, N):
+    #    for k in range(0, K):
+    #        B[k, j] = k
     C = torch.empty((M, N), dtype=torch.int32, device=device)
     num_warps = 8
     a = to_triton(A, device=device, dst_type=in_type_str)
@@ -5189,6 +5189,8 @@ def test_dot_max_num_imprecise_acc(M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, in_type_s
     torch_b = torch.from_numpy(B).to(device=device)
     th_b = f8_to_f16(torch_b, in_type_str)
     ref_out = torch.matmul(th_a, th_b).to(torch.int32)
+    print(ref_out)
+    print(C)
     if in_type_str == 'float8e4nv':
         torch.testing.assert_close(ref_out, C, rtol=0.01, atol=0.01)
     else:
