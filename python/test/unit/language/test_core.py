@@ -5154,8 +5154,8 @@ def matmul_kernel(  #
 
 
 @pytest.mark.interpreter
-@pytest.mark.parametrize("M, N, K", [(128, 256, 256)])
-@pytest.mark.parametrize("BLOCK_M, BLOCK_N, BLOCK_K", [(128, 256, 128), (64, 64, 64)])
+@pytest.mark.parametrize("M, N, K", [(64, 256, 256),(128, 256, 256), (128, 256, 128)])
+@pytest.mark.parametrize("BLOCK_M, BLOCK_N, BLOCK_K", [(64, 256, 128),(128, 256, 128),(128, 256, 64), (128, 128, 128), (64, 64, 64)])
 @pytest.mark.parametrize("in_type_str", ['float8e5', 'float8e4nv', 'float8e4b15'])
 @pytest.mark.parametrize("low_precision_acc", [0, 32, 64, 128])
 def test_dot_max_num_imprecise_acc(M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, in_type_str, low_precision_acc, device):
@@ -5171,7 +5171,7 @@ def test_dot_max_num_imprecise_acc(M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, in_type_s
     A = numpy_random((M, K), dtype_str=in_type_str)
     B = numpy_random((K, N), dtype_str=in_type_str)
     C = torch.empty((M, N), dtype=torch.float32, device=device)
-    num_warps = 8
+    num_warps = 4
     a = to_triton(A, device=device, dst_type=in_type_str)
     b = to_triton(B, device=device, dst_type=in_type_str)
     grid = (triton.cdiv(M, BLOCK_M) * triton.cdiv(N, BLOCK_N), 1)
@@ -5182,6 +5182,9 @@ def test_dot_max_num_imprecise_acc(M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, in_type_s
     torch_b = torch.from_numpy(B).to(device=device)
     th_b = f8_to_f16(torch_b, in_type_str)
     ref_out = torch.matmul(th_a, th_b).to(torch.float32)
+    import sys
+    np.set_printoptions(threshold=sys.maxsize)
+    print(C.to("cpu").numpy())
     if in_type_str == 'float8e4nv':
         torch.testing.assert_close(ref_out, C, rtol=0.01, atol=0.01)
     else:
