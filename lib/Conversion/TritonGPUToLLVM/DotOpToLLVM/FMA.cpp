@@ -8,23 +8,42 @@ using ::mlir::triton::gpu::DotOperandEncodingAttr;
 using ::mlir::triton::gpu::getShapePerCTA;
 using ::mlir::triton::gpu::NvidiaMmaEncodingAttr;
 
-using ValueTableFMA = std::map<std::pair<int, int, int>, Value>;
+using ValueTableFMA = std::map<std::tuple<int, int, int>, Value>;
 
 static ValueTableFMA
-getValueTableFromStructFMA(Value val, int K, int n0, int shapePerCTATile,
-                           int sizePerThread,
-                           ConversionPatternRewriter &rewriter, Location loc,
-                           const LLVMTypeConverter *typeConverter, Type type) {
+getValueTableFromStructFMA(Value val, int batch, int nonK, int K,
+                           ConversionPatternRewriter &rewriter, Location loc) {
   ValueTableFMA res;
   auto elems = unpackLLElements(loc, val, rewriter);
+  assert(elems.size() == K * nonK * batch);
   int index = 0;
-  for (unsigned k = 0; k < K; ++k) {
-    for (unsigned m = 0; m < n0; m += shapePerCTATile)
-      for (unsigned mm = 0; mm < sizePerThread; ++mm) {
-        res[{m + mm, k}] = elems[index++];
-      }
-  }
+  for (unsigned b = 0; b < batch; ++b)
+    for (unsigned k = 0; k < K; ++k)
+      for (unsigned i = 0; i < nonK; ++i)
+        res[{b, i, k}] = elems[index++];
   return res;
+}
+
+template <template <typename> typename Vec, typename T>
+llvm::SmallVector<T> expandShapeTo3d(Vec<T> s) {
+  int rank = s.size();
+  assert(rank == 2 || rank == 3);
+  llvm::SmallVector<T> expanded(3 - rank, 1);
+  expanded.append(s.begin(), s.end());
+  return expanded;
+}
+
+template <template <typename> typename Vec, typename T>
+llvm::SmallVector<T> expandOrderTo3d(Vec<T> o) {
+  int rank = o.size();
+  if (rank == 3)
+    return llvm::SmallVector<T>(o);
+  assert(rank == 2);
+  llvm::SmallVector<T> expanded;
+  for (auto i : o)
+    expanded.emplace_back(i + 1);
+  expanded.emplace_back(0);
+  return expanded;
 }
 
 LogicalResult convertFMADot(triton::DotOp op, triton::DotOp::Adaptor adaptor,
@@ -39,70 +58,51 @@ LogicalResult convertFMADot(triton::DotOp op, triton::DotOp::Adaptor adaptor,
   auto D = op.getResult();
 
   auto aTensorTy = cast<RankedTensorType>(A.getType());
-  auto bTensorTy = cast<RankedTensorType>(B.getType());
   auto dTensorTy = cast<RankedTensorType>(D.getType());
 
-  auto aShapePerCTA = getShapePerCTA(aTensorTy);
-  auto bShapePerCTA = getShapePerCTA(bTensorTy);
+  auto aShapePerCTA = expandShapeTo3d(getShapePerCTA(aTensorTy));
+  auto dShapePerCTA = expandShapeTo3d(getShapePerCTA(dTensorTy));
 
   BlockedEncodingAttr dLayout =
       cast<BlockedEncodingAttr>(dTensorTy.getEncoding());
-  auto order = dLayout.getOrder();
+  auto order = expandOrderTo3d(dLayout.getOrder());
   auto cc = unpackLLElements(loc, adaptor.getC(), rewriter);
 
   Value llA = adaptor.getA();
   Value llB = adaptor.getB();
 
-  auto sizePerThread = getSizePerThread(dLayout);
-  auto shapePerCTATile = getShapePerCTATile(dLayout);
+  auto sizePerThread = expandShapeTo3d(getSizePerThread(dLayout));
+  auto shapePerCTATile = expandShapeTo3d(getShapePerCTATile(dLayout));
 
-  int Batch = aShapePerCTA[0];
   int K = aShapePerCTA[2];
-  int M = aShapePerCTA[1];
-  int N = bShapePerCTA[2];
 
-  int bShapePerCTATile = shapePerCTATile[0];
-  int bSizePerThread = sizePerThread[0];
-  int mShapePerCTATile = shapePerCTATile[1];
-  int mSizePerThread = sizePerThread[1];
-  int nShapePerCTATile = shapePerCTATile[2];
-  int nSizePerThread = sizePerThread[2];
+  // Dot produces 3d matrix of shape [Batch, M, N],
+  // distributed between threads of the group.
+  // retSize defines number of elements stored in one thread
+  unsigned retSize[3];
+  for (int i = 0; i < 3; ++i)
+    retSize[i] = dShapePerCTA[i] / shapePerCTATile[i] * sizePerThread[i];
 
-  auto has = getValueTableFromStructFMA(llA, Batch, K, M, mShapePerCTATile,
-                                        mSizePerThread, rewriter, loc,
-                                        typeConverter, aTensorTy);
+  auto has =
+      getValueTableFromStructFMA(llA, retSize[0], retSize[1], K, rewriter, loc);
   auto hbs =
-      getValueTableFromStructFMA(llB, K, N, nShapePerCTATile, nSizePerThread,
-                                 rewriter, loc, typeConverter, bTensorTy);
+      getValueTableFromStructFMA(llB, retSize[0], retSize[2], K, rewriter, loc);
 
   SmallVector<Value> ret = cc;
-  // Number of elements stored over given dimension in ret array
-  // i.e. each dot produces 3d matrix of shape [Batch, M, N],
-  // Each thread holds part of this matrix, which is 3d as well
-  int retDimSize[] = {Batch / bShapePerCTATile * bSizePerThread,
-                      M / mShapePerCTATile * mSizePerThread,
-                      N / nShapePerCTATile * nSizePerThread};
 
-  for (unsigned k = 0; k < K; ++k)
-    for (unsigned b = 0; b < Batch; b += bShapePerCTATile)
-      for (unsigned m = 0; m < M; m += mShapePerCTATile)
-        for (unsigned n = 0; n < N; n += nShapePerCTATile)
-          for (unsigned bb = 0; bb < bSizePerThread; ++bb)
-            for (unsigned mm = 0; mm < mSizePerThread; ++mm)
-              for (unsigned nn = 0; nn < nSizePerThread; ++nn) {
-                int bIdx = b / bShapePerCTATile * bSizePerThread + bb;
-                int mIdx = m / mShapePerCTATile * mSizePerThread + mm;
-                int nIdx = n / nShapePerCTATile * nSizePerThread + nn;
-                int idx[] = {bIdx, mIdx, nIdx};
+  for (unsigned b = 0; b < retSize[0]; ++b)
+    for (unsigned m = 0; m < retSize[1]; ++m)
+      for (unsigned n = 0; n < retSize[2]; ++n)
+        for (unsigned k = 0; k < K; ++k) {
+          unsigned idx[] = {b, m, n};
 
-                int z = 0;
-                for (int i = 0; i < order.size(); i++) {
-                  int dim = order[i];
-                  z = z * retDimSize[dim] + idx[dim];
-                }
-                ret[z] = rewriter.create<LLVM::FMulAddOp>(
-                    loc, has[{m + mm, k}], hbs[{n + nn, k}], ret[z]);
-              }
+          unsigned linearIdx = 0;
+          for (auto dim : order)
+            linearIdx = linearIdx * retSize[dim] + idx[dim];
+
+          ret[linearIdx] = rewriter.create<LLVM::FMulAddOp>(
+              loc, has[{b, m, k}], hbs[{b, n, k}], ret[linearIdx]);
+        }
 
   auto res = packLLElements(loc, typeConverter, ret, rewriter, dTensorTy);
   rewriter.replaceOp(op, res);
