@@ -4,9 +4,8 @@
 using namespace mlir;
 using namespace mlir::triton;
 
-using ::mlir::triton::gpu::DotOperandEncodingAttr;
 using ::mlir::triton::gpu::getShapePerCTA;
-using ::mlir::triton::gpu::NvidiaMmaEncodingAttr;
+using ::mlir::triton::gpu::getSizePerThread;
 
 using ValueTableFMA = std::map<std::tuple<int, int, int>, Value>;
 
@@ -26,23 +25,17 @@ getValueTableFromStructFMA(Value val, int batch, int nonK, int K,
 
 template <template <typename> typename Vec, typename T>
 llvm::SmallVector<T> expandShapeTo3d(Vec<T> s) {
-  int rank = s.size();
-  assert(rank == 2 || rank == 3);
-  llvm::SmallVector<T> expanded(3 - rank, 1);
+  llvm::SmallVector<T> expanded(3 - s.size(), 1);
   expanded.append(s.begin(), s.end());
   return expanded;
 }
 
 template <template <typename> typename Vec, typename T>
 llvm::SmallVector<T> expandOrderTo3d(Vec<T> o) {
-  int rank = o.size();
-  if (rank == 3)
-    return llvm::SmallVector<T>(o);
-  assert(rank == 2);
-  llvm::SmallVector<T> expanded;
-  for (auto i : o)
-    expanded.emplace_back(i + 1);
-  expanded.emplace_back(0);
+  int oldRank = o.size();
+  llvm::SmallVector<T> expanded(0, 3);
+  for (int i = 0; i < oldRank; ++i)
+    expanded[i] += 3 - oldRank;
   return expanded;
 }
 
@@ -76,14 +69,10 @@ LogicalResult convertFMADot(triton::DotOp op, triton::DotOp::Adaptor adaptor,
 
   int K = aShapePerCTA[2];
 
-  // Dot produces 3d matrix of shape [Batch, M, N],
-  // distributed between threads of the group.
-  // retSize defines number of elements stored in one thread
   unsigned retSize[3];
   for (int i = 0; i < 3; ++i) {
-    auto numRep = dShapePerCTA[i] / shapePerCTATile[i];
-    if (numRep == 0)
-      numRep = 1;
+    unsigned numRep = dShapePerCTA[i] / shapePerCTATile[i];
+    numRep = std::max(static_cast<unsigned>(1), numRep);
     retSize[i] = numRep * sizePerThread[i];
   }
 
@@ -104,7 +93,7 @@ LogicalResult convertFMADot(triton::DotOp op, triton::DotOp::Adaptor adaptor,
           for (auto dim : llvm::reverse(order))
             linearIdx = linearIdx * retSize[dim] + idx[dim];
 
-          ret[linearIdx] = rewriter.create<LLVM::FMulAddOp>(
+          ret[linearIdx] = rewriter.create<mlir::LLVM::FMulAddOp>(
               loc, has[{b, m, k}], hbs[{b, n, k}], ret[linearIdx]);
         }
 
