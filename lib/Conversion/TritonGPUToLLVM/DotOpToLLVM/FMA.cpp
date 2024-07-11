@@ -80,8 +80,12 @@ LogicalResult convertFMADot(triton::DotOp op, triton::DotOp::Adaptor adaptor,
   // distributed between threads of the group.
   // retSize defines number of elements stored in one thread
   unsigned retSize[3];
-  for (int i = 0; i < 3; ++i)
-    retSize[i] = dShapePerCTA[i] / shapePerCTATile[i] * sizePerThread[i];
+  for (int i = 0; i < 3; ++i) {
+    auto numRep = dShapePerCTA[i] / shapePerCTATile[i];
+    if (numRep == 0)
+      numRep = 1;
+    retSize[i] = numRep * sizePerThread[i];
+  }
 
   auto has =
       getValueTableFromStructFMA(llA, retSize[0], retSize[1], K, rewriter, loc);
@@ -97,7 +101,7 @@ LogicalResult convertFMADot(triton::DotOp op, triton::DotOp::Adaptor adaptor,
           unsigned idx[] = {b, m, n};
 
           unsigned linearIdx = 0;
-          for (auto dim : order)
+          for (auto dim : llvm::reverse(order))
             linearIdx = linearIdx * retSize[dim] + idx[dim];
 
           ret[linearIdx] = rewriter.create<LLVM::FMulAddOp>(
