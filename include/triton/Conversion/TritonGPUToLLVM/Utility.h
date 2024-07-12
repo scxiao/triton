@@ -1639,6 +1639,38 @@ inline bool isLayoutMmaV1(Attribute layout) {
   return isMmaV1;
 }
 
+template <template <typename> typename Vec, typename T>
+llvm::SmallVector<T> expandMatrixShapeWithBatch(Vec<T> s) {
+  llvm::SmallVector<T> expanded(3 - s.size(), 1);
+  expanded.append(s.begin(), s.end());
+  return expanded;
+}
+
+template <template <typename> typename Vec, typename T>
+llvm::SmallVector<T> expandMatrixOrderWithBatch(Vec<T> o) {
+  int oldRank = o.size();
+  llvm::SmallVector<T> expanded(0, 3);
+  for (int i = 0; i < oldRank; ++i)
+    expanded[i] += 3 - oldRank;
+  return expanded;
+}
+
+SharedMemoryObject
+getExpandedSharedMemoryObject(ConversionPatternRewriter &rewriter, Location loc,
+                              SharedMemoryObject smemObj,
+                              ArrayRef<int64_t> shape) {
+  auto strides = smemObj.getStrides();
+  auto offsets = smemObj.getOffsets();
+  auto rank = strides.size();
+  if (rank == 3)
+    return smemObj;
+  strides.insert(strides.begin(), i32_val(shape[0] * shape[1]));
+  offsets.insert(offsets.begin(), i32_val(0));
+  auto expandedSmemObj = SharedMemoryObject(
+      smemObj.getBase(), smemObj.getBaseElemType(), strides, offsets);
+  return expandedSmemObj;
+}
+
 } // namespace mlir
 
 #endif

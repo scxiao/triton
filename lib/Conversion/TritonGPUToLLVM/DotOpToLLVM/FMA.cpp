@@ -23,22 +23,6 @@ getValueTableFromStructFMA(Value val, int batch, int nonK, int K,
   return res;
 }
 
-template <template <typename> typename Vec, typename T>
-llvm::SmallVector<T> expandShapeTo3d(Vec<T> s) {
-  llvm::SmallVector<T> expanded(3 - s.size(), 1);
-  expanded.append(s.begin(), s.end());
-  return expanded;
-}
-
-template <template <typename> typename Vec, typename T>
-llvm::SmallVector<T> expandOrderTo3d(Vec<T> o) {
-  int oldRank = o.size();
-  llvm::SmallVector<T> expanded(0, 3);
-  for (int i = 0; i < oldRank; ++i)
-    expanded[i] += 3 - oldRank;
-  return expanded;
-}
-
 LogicalResult convertFMADot(triton::DotOp op, triton::DotOp::Adaptor adaptor,
                             const LLVMTypeConverter *typeConverter,
                             ConversionPatternRewriter &rewriter) {
@@ -53,19 +37,20 @@ LogicalResult convertFMADot(triton::DotOp op, triton::DotOp::Adaptor adaptor,
   auto aTensorTy = cast<RankedTensorType>(A.getType());
   auto dTensorTy = cast<RankedTensorType>(D.getType());
 
-  auto aShapePerCTA = expandShapeTo3d(getShapePerCTA(aTensorTy));
-  auto dShapePerCTA = expandShapeTo3d(getShapePerCTA(dTensorTy));
+  auto aShapePerCTA = expandMatrixShapeWithBatch(getShapePerCTA(aTensorTy));
+  auto dShapePerCTA = expandMatrixShapeWithBatch(getShapePerCTA(dTensorTy));
 
   BlockedEncodingAttr dLayout =
       cast<BlockedEncodingAttr>(dTensorTy.getEncoding());
-  auto order = expandOrderTo3d(dLayout.getOrder());
+  auto order = expandMatrixOrderWithBatch(dLayout.getOrder());
   auto cc = unpackLLElements(loc, adaptor.getC(), rewriter);
 
   Value llA = adaptor.getA();
   Value llB = adaptor.getB();
 
-  auto sizePerThread = expandShapeTo3d(getSizePerThread(dLayout));
-  auto shapePerCTATile = expandShapeTo3d(getShapePerCTATile(dLayout));
+  auto sizePerThread = expandMatrixShapeWithBatch(getSizePerThread(dLayout));
+  auto shapePerCTATile =
+      expandMatrixShapeWithBatch(getShapePerCTATile(dLayout));
 
   int K = aShapePerCTA[2];
 
