@@ -1651,7 +1651,7 @@ llvm::SmallVector<T> expandMatrixOrderWithBatch(Vec<T> o) {
   int oldRank = o.size();
   llvm::SmallVector<T> expanded(3, 0);
   for (int i = 0; i < oldRank; ++i)
-    expanded[i] += 3 - oldRank;
+    expanded[i] += o[i] + 3 - oldRank;
   return expanded;
 }
 
