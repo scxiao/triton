@@ -1649,7 +1649,7 @@ llvm::SmallVector<T> expandMatrixShapeWithBatch(Vec<T> s) {
 template <template <typename> typename Vec, typename T>
 llvm::SmallVector<T> expandMatrixOrderWithBatch(Vec<T> o) {
   int oldRank = o.size();
-  llvm::SmallVector<T> expanded(0, 3);
+  llvm::SmallVector<T> expanded(3, 0);
   for (int i = 0; i < oldRank; ++i)
     expanded[i] += 3 - oldRank;
   return expanded;
