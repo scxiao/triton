@@ -1,9 +1,13 @@
 #include "mlir/Support/LLVM.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
+#include "triton/Dialect/TritonGPU/IR/Dialect.h"
 
 using namespace mlir;
 using namespace mlir::triton;
+using namespace ::mlir::triton::gpu;
 
+using ::mlir::triton::gpu::expandMatrixOrderWithBatch;
+using ::mlir::triton::gpu::expandMatrixShapeWithBatch;
 using ::mlir::triton::gpu::getShapePerCTA;
 using ::mlir::triton::gpu::getSizePerThread;
 
