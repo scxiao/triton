@@ -65,11 +65,12 @@ ValueTable getValueTableFromStruct(Value val, int K, int n0, int shapePerCTA,
   return res;
 }
 
-Value loadFMAOp(Value A, Value llA, BlockedEncodingAttr dLayout, Value thread,
-                Location loc, const LLVMTypeConverter *typeConverter,
+Value loadFMAOp(Value dotOp, Value llA, BlockedEncodingAttr dLayout,
+                Value thread, Location loc,
+                const LLVMTypeConverter *typeConverter,
                 ConversionPatternRewriter &rewriter, const int kDim) {
   const int nonKDim = kDim == 0 ? 1 : 0;
-  auto aTensorTy = cast<MemDescType>(A.getType());
+  auto aTensorTy = cast<MemDescType>(dotOp.getType());
   auto aLayout = cast<SharedEncodingAttr>(aTensorTy.getEncoding());
   auto aShapePerCTA = getShapePerCTA(aTensorTy);
 
@@ -80,6 +81,7 @@ Value loadFMAOp(Value A, Value llA, BlockedEncodingAttr dLayout, Value thread,
       rewriter);
   Value strideAM = aSmem.strides[nonKDim];
   Value strideAK = aSmem.strides[kDim];
+  int B = ;
   int K = aShapePerCTA[kDim];
   int M = aShapePerCTA[nonKDim];
 
@@ -102,18 +104,19 @@ Value loadFMAOp(Value A, Value llA, BlockedEncodingAttr dLayout, Value thread,
   int mShapePerCTATile = shapePerCTATile[nonKDim];
   int mSizePerThread = sizePerThread[nonKDim];
 
-  for (unsigned k = 0; k < K; ++k)
-    for (unsigned m = 0; m < M; m += mShapePerCTATile)
-      for (unsigned mm = 0; mm < mSizePerThread; ++mm) {
-        Value rawMOffset = add(nonKTileOffset, i32_val(m + mm));
-        Value rawKOffset = i32_val(k);
-        Value aOffM = mul(urem(rawMOffset, i32_val(M)), strideAM);
-        Value aOffK = mul(urem(rawKOffset, i32_val(K)), strideAK);
-        Value offset = add(aOffM, aOffK);
-        Value pa = gep(ptrTy, elemTy, aSmem.base, offset);
-        Value va = load(elemTy, pa);
-        vas.emplace_back(va);
-      }
+  for (unsigned b = 0; b < B; ++b)
+    for (unsigned k = 0; k < K; ++k)
+      for (unsigned m = 0; m < M; m += mShapePerCTATile)
+        for (unsigned mm = 0; mm < mSizePerThread; ++mm) {
+          Value rawMOffset = add(nonKTileOffset, i32_val(m + mm));
+          Value rawKOffset = i32_val(k);
+          Value aOffM = mul(urem(rawMOffset, i32_val(M)), strideAM);
+          Value aOffK = mul(urem(rawKOffset, i32_val(K)), strideAK);
+          Value offset = add(aOffM, aOffK);
+          Value pa = gep(ptrTy, elemTy, aSmem.base, offset);
+          Value va = load(elemTy, pa);
+          vas.emplace_back(va);
+        }
 
   return getStructFromValueTable(vas, rewriter, loc, typeConverter, elemTy);
 }
