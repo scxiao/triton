@@ -1655,7 +1655,7 @@ llvm::SmallVector<T> expandMatrixOrderWithBatch(Vec<T> o) {
   return expanded;
 }
 
-SharedMemoryObject
+inline SharedMemoryObject
 getExpandedSharedMemoryObject(ConversionPatternRewriter &rewriter, Location loc,
                               SharedMemoryObject smemObj,
                               ArrayRef<int64_t> shape) {
