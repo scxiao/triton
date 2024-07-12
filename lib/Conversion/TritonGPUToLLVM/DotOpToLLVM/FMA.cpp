@@ -73,6 +73,7 @@ LogicalResult convertFMADot(triton::DotOp op, triton::DotOp::Adaptor adaptor,
   for (int i = 0; i < 3; ++i) {
     unsigned numRep = dShapePerCTA[i] / shapePerCTATile[i];
     numRep = std::max(static_cast<unsigned>(1), numRep);
+    assert(numRep == 1);
     retSize[i] = numRep * sizePerThread[i];
   }
 
