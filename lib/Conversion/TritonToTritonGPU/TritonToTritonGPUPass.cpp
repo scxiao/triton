@@ -228,15 +228,18 @@ struct TritonDotPattern : public OpConversionPattern<triton::DotOp> {
     SmallVector<unsigned> retSizePerThread(rank, 1);
     auto numElements = product<int64_t>(origShape);
     if (numElements / (numWarps * threadsPerWarp) >= 4) {
-      retSizePerThread[rank - 1] =
-          std::min(2, static_cast<int>(origShape[rank - 1]));
-      retSizePerThread[rank - 2] =
-          std::min(2, static_cast<int>(origShape[rank - 2]));
+      retSizePerThread[rank - 1] = 2;
+      retSizePerThread[rank - 2] = 2;
     }
     if (numElements / (numWarps * threadsPerWarp) >= 16) {
       retSizePerThread[rank - 1] = 4;
       retSizePerThread[rank - 2] = 4;
     }
+    retSizePerThread[rank - 1] = std::min(
+        retSizePerThread[rank - 1], static_cast<unsigned>(origShape[rank - 1]));
+    retSizePerThread[rank - 2] = std::min(
+        retSizePerThread[rank - 2], static_cast<unsigned>(origShape[rank - 2]));
+
     SmallVector<unsigned> retOrder(rank);
     for (unsigned i = 0; i < rank; ++i)
       retOrder[i] = rank - 1 - i;
