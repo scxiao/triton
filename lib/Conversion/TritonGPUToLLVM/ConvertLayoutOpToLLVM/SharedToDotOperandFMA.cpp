@@ -52,16 +52,16 @@ Value getStructFromValueTable(ArrayRef<Value> vals,
 
 SmallVector<Value> swizzleIndices(ConversionPatternRewriter &rewriter,
                                   Location loc, SmallVector<Value> rawIndices,
-                                  SharedEncodingAttr attr) {
-  const auto &order = attr.getOrder();
+                                  SharedEncodingAttr layout) {
+  const auto &order = layout.getOrder();
   auto rank = order.size();
 
-  if (attr.getMaxPhase() == 1)
+  if (layout.getMaxPhase() == 1)
     return rawIndices;
 
-  auto vec = i32_val(attr.getVec());
-  auto perPhase = i32_val(attr.getPerPhase());
-  auto maxPhase = i32_val(attr.getMaxPhase());
+  auto vec = i32_val(layout.getVec());
+  auto perPhase = i32_val(layout.getPerPhase());
+  auto maxPhase = i32_val(layout.getMaxPhase());
 
   auto fastIdx = rawIndices[order[0]];
   auto secondIdx = rawIndices[order[1]];
@@ -149,8 +149,8 @@ Value loadFMAOp(Value dotOp, Value llA, BlockedEncodingAttr dLayout,
 
             Value offset = i32_val(0);
             for (int dim = 0; dim < order.size(); ++dim)
-              offset = add(offset, mul(urem(swizzledIndices[dim], i32_val(B)),
-                                       strides[dim]));
+              offset = add(
+                  offset, mul(urem(rawIndices[dim], i32_val(B)), strides[dim]));
 
             Value pa = gep(ptrTy, elemTy, smem.base, offset);
             Value va = load(elemTy, pa);
