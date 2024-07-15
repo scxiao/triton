@@ -149,8 +149,9 @@ Value loadFMAOp(Value dotOp, Value llA, BlockedEncodingAttr dLayout,
 
             Value offset = i32_val(0);
             for (int dim = 0; dim < order.size(); ++dim)
-              offset = add(
-                  offset, mul(urem(rawIndices[dim], i32_val(B)), strides[dim]));
+              offset = add(offset, mul(urem(swizzledIndices[dim],
+                                            i32_val(opShapePerCTA[dim])),
+                                       strides[dim]));
 
             Value pa = gep(ptrTy, elemTy, smem.base, offset);
             Value va = load(elemTy, pa);
