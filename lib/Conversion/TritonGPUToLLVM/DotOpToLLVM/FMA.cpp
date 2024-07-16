@@ -1,6 +1,7 @@
 #include "mlir/Support/LLVM.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 
 using namespace mlir;
 using namespace mlir::triton;
@@ -25,6 +26,42 @@ getValueTableFromStructFMA(Value val, int batch, int nonK, int K,
       for (unsigned i = 0; i < nonK; ++i)
         res[{b, i, k}] = elems[index++];
   return res;
+}
+
+struct DotOperation {
+  int vectorSize;
+};
+
+DotOperation chooseInstruction(triton::DotOp op) {
+  auto aOp = cast<RankedTensorType>(op.getA().getType());
+  auto aElemType = aOp.getElementType();
+  auto mod = op->getParentOfType<ModuleOp>();
+  auto arch = getAMDArch(mod);
+  int availableVecSize = 1;
+  // following architectures support dot instructions
+  if (arch == "gfx908" || arch == "gfx90a" || arch.starts_with("gfx94") ||
+      arch.starts_with("gfx11")) {
+    if (aElemType.isF16())
+      availableVecSize = 2;
+    if (aElemType.isSignedInteger(8))
+      availableVecSize = 4;
+  }
+  return {availableVecSize};
+}
+
+Value packOperand(ConversionPatternRewriter &rewriter, Location loc,
+                  ValueTableFMA scalarValues, unsigned b, unsigned nonK,
+                  unsigned k, unsigned vectorSize) {
+  if (vectorSize == 1)
+    return scalarValues[{b, nonK, k}];
+  auto elemTy = scalarValues[{b, nonK, k}].getType();
+  auto vecTy = vec_ty(elemTy, vectorSize);
+  Value vec = undef(vecTy);
+  for (int elem = 0; elem < vectorSize; ++elem) {
+    vec = insert_element(vecTy, vec, scalarValues[{b, nonK, k + elem}],
+                         i32_val(elem));
+  }
+  return vec;
 }
 
 LogicalResult convertFMADot(triton::DotOp op, triton::DotOp::Adaptor adaptor,
@@ -71,20 +108,25 @@ LogicalResult convertFMADot(triton::DotOp op, triton::DotOp::Adaptor adaptor,
       getValueTableFromStructFMA(llB, retSize[0], retSize[2], K, rewriter, loc);
 
   SmallVector<Value> ret = cc;
+  auto selectedOp = chooseInstruction(op);
 
   for (unsigned b = 0; b < retSize[0]; ++b)
     for (unsigned m = 0; m < retSize[1]; ++m)
-      for (unsigned n = 0; n < retSize[2]; ++n)
-        for (unsigned k = 0; k < K; ++k) {
-          unsigned idx[] = {b, m, n};
-
-          unsigned linearIdx = 0;
-          for (auto dim : llvm::reverse(order))
-            linearIdx = linearIdx * retSize[dim] + idx[dim];
-
-          ret[linearIdx] = rewriter.create<mlir::LLVM::FMulAddOp>(
-              loc, has[{b, m, k}], hbs[{b, n, k}], ret[linearIdx]);
+      for (unsigned n = 0; n < retSize[2]; ++n) {
+        unsigned idx[] = {b, m, n};
+        unsigned linearIdx = 0;
+        for (auto dim : llvm::reverse(order)) {
+          linearIdx = linearIdx * retSize[dim] + idx[dim];
         }
+        for (unsigned k = 0; k < K; k += selectedOp.vectorSize) {
+          auto aOp =
+              packOperand(rewriter, loc, has, b, m, k, selectedOp.vectorSize);
+          auto bOp =
+              packOperand(rewriter, loc, hbs, b, m, k, selectedOp.vectorSize);
+          ret[linearIdx] = rewriter.create<mlir::LLVM::FMulAddOp>(
+              loc, aOp, bOp, ret[linearIdx]);
+        }
+      }
 
   auto res = packLLElements(loc, typeConverter, ret, rewriter, dTensorTy);
   rewriter.replaceOp(op, res);
