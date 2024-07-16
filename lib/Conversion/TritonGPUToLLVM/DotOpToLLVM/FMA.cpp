@@ -30,6 +30,7 @@ getValueTableFromStructFMA(Value val, int batch, int nonK, int K,
 
 struct DotOperation {
   int vectorSize;
+  StringRef intrinsicName;
 };
 
 DotOperation chooseInstruction(triton::DotOp op) {
@@ -37,16 +38,15 @@ DotOperation chooseInstruction(triton::DotOp op) {
   auto aElemType = aOp.getElementType();
   auto mod = op->getParentOfType<ModuleOp>();
   auto arch = getAMDArch(mod);
-  int availableVecSize = 1;
   // following architectures support dot instructions
   if (arch == "gfx908" || arch == "gfx90a" || arch.starts_with("gfx94") ||
       arch.starts_with("gfx11")) {
     if (aElemType.isF16())
-      availableVecSize = 2;
+      return {2, "llvm.amdgcn.fdot2"};
     if (aElemType.isSignedInteger(8))
-      availableVecSize = 4;
+      return {4, "llvm.amdgcn.sdot8"};
   }
-  return {availableVecSize};
+  return {1, "llvm.fmuladd.f32"};
 }
 
 Value packOperand(ConversionPatternRewriter &rewriter, Location loc,
