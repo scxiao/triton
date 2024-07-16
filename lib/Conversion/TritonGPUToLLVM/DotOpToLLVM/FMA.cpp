@@ -122,7 +122,7 @@ LogicalResult convertFMADot(triton::DotOp op, triton::DotOp::Adaptor adaptor,
           auto aOp =
               packOperand(rewriter, loc, has, b, m, k, selectedOp.vectorSize);
           auto bOp =
-              packOperand(rewriter, loc, hbs, b, m, k, selectedOp.vectorSize);
+              packOperand(rewriter, loc, hbs, b, n, k, selectedOp.vectorSize);
           ret[linearIdx] = rewriter.create<mlir::LLVM::FMulAddOp>(
               loc, aOp, bOp, ret[linearIdx]);
         }
