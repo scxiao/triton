@@ -486,6 +486,92 @@ public:
     return success();
   }
 };
+
+class AccelerateBlocked : public mlir::RewritePattern {
+  StringRef arch;
+
+public:
+  AccelerateBlocked(mlir::MLIRContext *context, StringRef arch)
+      : mlir::RewritePattern(tt::DotOp::getOperationName(), 1, context),
+        arch(arch) {}
+
+  bool isFloat(Type t) const { return t.isIntOrFloat() && !t.isIntOrIndex(); }
+
+  Value castToElTy(mlir::PatternRewriter &rewriter, Value v, Type newTy) const {
+    Location loc = v.getLoc();
+    if (isFloat(v.getType()) && isFloat(newTy))
+      return rewriter.create<triton::FpToFpOp>(loc, newTy, v);
+    if (!isFloat(v.getType()) && isFloat(newTy))
+      return rewriter.create<mlir::arith::SIToFPOp>(loc, newTy, v);
+    if (isFloat(v.getType()) && !isFloat(newTy))
+      return rewriter.create<mlir::arith::UIToFPOp>(loc, newTy, v);
+    assert(false &&
+           "int -> int cast is unexpected, FMA do not support this case");
+    return Value();
+  }
+
+  mlir::LogicalResult
+  matchAndRewrite(mlir::Operation *op,
+                  mlir::PatternRewriter &rewriter) const override {
+    auto dotOp = cast<tt::DotOp>(op);
+    auto a = dotOp.getA();
+    auto b = dotOp.getB();
+    auto c = dotOp.getC();
+    auto d = dotOp.getD();
+
+    Type aElTy = a.getType().getElementType();
+    Type bElTy = b.getType().getElementType();
+    Type cElTy = c.getType().getElementType();
+    Type dElTy = d.getType().getElementType();
+
+    int rank = a.getType().getShape().size();
+    int k = a.getType().getShape()[rank - 1];
+
+    bool dotAvailable = arch == "gfx908" || arch == "gfx90a" ||
+                        arch.starts_with("gfx94") || arch.starts_with("gfx11");
+
+    // Try Fp16 x Fp16 -> Fp32 dot
+    if (dotAvailable && isFloat(aElTy) && isFloat(bElTy) && isFloat(cElTy) &&
+        isFloat(dElTy)) {
+      if (k >= 2)
+        return success();
+      // if k < 2: can not use DOT instruction, continue with FMA
+    }
+    // Try I8 x I8 -> I32 dot
+    if (dotAvailable && aElTy.isSignedInteger(8) && bElTy.isSignedInteger(8) &&
+        cElTy.isSignedInteger(32) && dElTy.isSignedInteger(32)) {
+      if (k >= 4)
+        return success();
+      // if k < 4: can not use DOT instruction, continue with FMA
+    }
+
+    // Convert operands to one FP type to apply FMA case
+    unsigned maxBitsize =
+        std::max(aElTy.getIntOrFloatBitWidth(), bElTy.getIntOrFloatBitWidth());
+    maxBitsize = std::max(maxBitsize, std::max(cElTy.getIntOrFloatBitWidth(),
+                                               dElTy.getIntOrFloatBitWidth()));
+
+    // Adjust to minimal available FMA bitwidth
+    maxBitsize = std::max(maxBitsize, 16u);
+    assert(maxBitsize <= 32);
+
+    Type commonTy =
+        maxBitsize == 16 ? rewriter.getF16Type() : rewriter.getF32Type();
+
+    auto newA = castToElTy(rewriter, a, commonTy);
+    auto newB = castToElTy(rewriter, b, commonTy);
+    auto newC = castToElTy(rewriter, c, commonTy);
+
+    auto newDot = rewriter.create<tt::DotOp>(
+        dotOp.getLoc(), newC.getType(), newA, newB, newC,
+        dotOp.getInputPrecision(), dotOp.getMaxNumImpreciseAcc());
+    auto newD = castToElTy(rewriter, newDot.getResult(), dElTy);
+    d.replaceAllUsesWith(newD);
+    dotOp.erase();
+    return success();
+  }
+};
+
 static Value promoteOperand(OpBuilder &builder, Location loc, Value operand,
                             Type promotedType) {
   Type tensorPromotedType = cast<RankedTensorType>(operand.getType())
@@ -530,64 +616,8 @@ static void decomposeMixedModeDotOp(ModuleOp mod) {
               ? AElType
               : BElType;
     } else {
-      // FMA case.
-      Type AElType = dotOp.getA().getType().getElementType();
-      Type DElType = D.getType().getElementType();
-
-      // Convert int operands to FP32 to apply FMA case
-      // Do it here instead of introducing new pattern because the pass is more
-      // about MMA dots.
-      // TODO: Introduce new pass for FMA dots legalization.
-      if (AElType.isIntOrIndex()) {
-        assert(dotOp.getB().getType().getElementType().isIntOrIndex() &&
-               dotOp.getC().getType().getElementType().isIntOrIndex() &&
-               DElType.isIntOrIndex());
-        auto convertTensorIToFP = [&](Value v) -> Value {
-          RankedTensorType vTy = cast<RankedTensorType>(v.getType());
-          Type dstType = vTy.cloneWith(std::nullopt, builder.getF32Type());
-          Type srcElType = vTy.getElementType();
-          return !srcElType.isUnsignedInteger()
-                     ? builder
-                           .create<mlir::arith::SIToFPOp>(dotOp.getLoc(),
-                                                          dstType, v)
-                           .getResult()
-                     : builder
-                           .create<mlir::arith::UIToFPOp>(dotOp.getLoc(),
-                                                          dstType, v)
-                           .getResult();
-        };
-        auto convertTensorFPToI = [&](Type dstElType, Value v) -> Value {
-          RankedTensorType vTy = cast<RankedTensorType>(v.getType());
-          Type dstType = vTy.cloneWith(std::nullopt, dstElType);
-          return !dstElType.isUnsignedInteger()
-                     ? builder
-                           .create<mlir::arith::FPToSIOp>(dotOp.getLoc(),
-                                                          dstType, v)
-                           .getResult()
-                     : builder
-                           .create<mlir::arith::FPToUIOp>(dotOp.getLoc(),
-                                                          dstType, v)
-                           .getResult();
-        };
-
-        auto newAOperand = convertTensorIToFP(dotOp.getA());
-        auto newBOperand = convertTensorIToFP(dotOp.getB());
-        auto newCOperand = convertTensorIToFP(dotOp.getC());
-        auto newDot = builder.create<tt::DotOp>(
-            dotOp.getLoc(), newCOperand.getType(), newAOperand, newBOperand,
-            newCOperand, dotOp.getInputPrecision(),
-            dotOp.getMaxNumImpreciseAcc());
-        auto newD = convertTensorFPToI(DElType, newDot.getResult());
-        D.replaceAllUsesWith(newD);
-        dotOp.erase();
-        return;
-      }
-
-      if (AElType == DElType)
-        return;
-      if (AElType.isF16() && DElType.isF32())
-        return;
-      promoteType = DElType;
+      // All needed transformations are done in AccelerateBlocked pattern
+      return;
     }
     Location loc = dotOp.getLoc();
     Value promotedA = promoteOperand(builder, loc, dotOp.getA(), promoteType);
@@ -704,6 +734,7 @@ public:
     } else if (matrixCoreVer == MatrixCoreVersion::RDNA_WMMA) {
       patterns.add<::BlockedToWMMA>(context);
     }
+    patterns.add<::AccelerateBlocked>(context, getAMDArch(m));
     if (applyPatternsAndFoldGreedily(m, std::move(patterns)).failed()) {
       signalPassFailure();
     }
