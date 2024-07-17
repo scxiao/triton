@@ -43,17 +43,34 @@ DotOperation chooseInstruction(ConversionPatternRewriter &rewriter,
   auto dElemType = dOp.getElementType();
   auto mod = op->getParentOfType<ModuleOp>();
   auto arch = getAMDArch(mod);
+  DotOperation chosenOp;
   // following architectures support dot instructions
   if (arch == "gfx908" || arch == "gfx90a" || arch.starts_with("gfx94") ||
       arch.starts_with("gfx11")) {
-    if (aElemType.isF16() && dElemType.isF32())
-      return {2, f32_ty, "llvm.amdgcn.fdot2.f16.f16", {}};
-    if (aElemType.isSignedInteger(8) && dElemType.isSignedInteger(32))
-      return {4, i32_ty, "llvm.amdgcn.sdot8", {false_val()}};
+    if (aElemType.isF16() && dElemType.isF32()) {
+      chosenOp.vectorSize = 2;
+      chosenOp.outElemType = f32_ty;
+      chosenOp.intrinsicName = "llvm.amdgcn.fdot2";
+      chosenOp.additionalArgs = {false_val()};
+    }
+    if (aElemType.isSignedInteger(8) && dElemType.isSignedInteger(32)) {
+      chosenOp.vectorSize = 4;
+      chosenOp.outElemType = i32_ty;
+      chosenOp.intrinsicName = "llvm.amdgcn.sdot8";
+      chosenOp.additionalArgs = {false_val()};
+    }
+  } else {
+    assert(aElemType.isIntOrFloat() && !aElemType.isIntOrIndex());
+    assert(aElemType == dElemType);
+    chosenOp.vectorSize = 1;
+    chosenOp.outElemType = aElemType;
+    if (aElemType.isF32())
+      chosenOp.intrinsicName = "llvm.fmuladd.f32";
+    if (aElemType.isF16())
+      chosenOp.intrinsicName = "llvm.fmuladd.f16";
+    chosenOp.additionalArgs = {};
   }
-  assert(aElemType.isIntOrFloat() && !aElemType.isIntOrIndex());
-  assert(aElemType == dElemType);
-  return {1, aElemType, "llvm.fmuladd.f32", {}};
+  return chosenOp;
 }
 
 Value packOperand(ConversionPatternRewriter &rewriter, Location loc,
@@ -79,8 +96,8 @@ Value generateDotOp(ConversionPatternRewriter &rewriter, Location loc,
   for (auto arg : args)
     argTypes.push_back(arg.getType());
   auto funcType = LLVM::LLVMFunctionType::get(op.outElemType, argTypes);
-  auto d = call(funcType, op.intrinsicName, args);
-  return d.getResult();
+  auto d = call_intrinsic(op.outElemType, op.intrinsicName, args);
+  return d.getResult(0);
 }
 
 LogicalResult convertFMADot(triton::DotOp op, triton::DotOp::Adaptor adaptor,
