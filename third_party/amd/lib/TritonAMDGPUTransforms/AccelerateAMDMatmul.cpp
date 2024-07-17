@@ -533,16 +533,16 @@ public:
     // Try Fp16 x Fp16 -> Fp32 dot
     if (dotAvailable && aElTy.isF16() && bElTy.isF16() && cElTy.isF32() &&
         dElTy.isF32()) {
-      if (k >= 2)
+      if (k % 2 == 0)
         return success();
-      // if k < 2: can not use DOT instruction, continue with FMA
+      // if k % 2 != 0: can not use DOT instruction, continue with FMA
     }
     // Try I8 x I8 -> I32 dot
     if (dotAvailable && aElTy.isSignedInteger(8) && bElTy.isSignedInteger(8) &&
         cElTy.isSignedInteger(32) && dElTy.isSignedInteger(32)) {
-      if (k >= 4)
+      if (k % 4 == 0)
         return success();
-      // if k < 4: can not use DOT instruction, continue with FMA
+      // if k % 4 != 0: can not use DOT instruction, continue with FMA
     }
 
     // Convert operands to one FP type to apply FMA case
