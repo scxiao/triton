@@ -531,8 +531,8 @@ public:
                         arch.starts_with("gfx94") || arch.starts_with("gfx11");
 
     // Try Fp16 x Fp16 -> Fp32 dot
-    if (dotAvailable && isFloat(aElTy) && isFloat(bElTy) && isFloat(cElTy) &&
-        isFloat(dElTy)) {
+    if (dotAvailable && aElTy.isF16() && bElTy.isF16() && cElTy.isF32() &&
+        dElTy.isF32()) {
       if (k >= 2)
         return success();
       // if k < 2: can not use DOT instruction, continue with FMA
