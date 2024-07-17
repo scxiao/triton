@@ -32,7 +32,7 @@ struct DotOperation {
   int vectorSize;
   Type outElemType;
   StringRef intrinsicName;
-  ValueRange additionalArgs;
+  SmallVector<Value> additionalArgs;
 };
 
 DotOperation chooseInstruction(ConversionPatternRewriter &rewriter,
@@ -44,10 +44,13 @@ DotOperation chooseInstruction(ConversionPatternRewriter &rewriter,
   // following architectures support dot instructions
   if (arch == "gfx908" || arch == "gfx90a" || arch.starts_with("gfx94") ||
       arch.starts_with("gfx11")) {
+    auto i1ty = rewriter.getIntegerType(1);
+    auto falseVal = rewriter.create<LLVM::ConstantOp>(loc, i1ty, 0);
+    falseVal.dump();
     if (aElemType.isF16())
-      return {2, f32_ty, "llvm.amdgcn.fdot2", {i1_val(false)}};
+      return {2, f32_ty, "llvm.amdgcn.fdot2", {falseVal}};
     if (aElemType.isSignedInteger(8))
-      return {4, i32_ty, "llvm.amdgcn.sdot8", {i1_val(false)}};
+      return {4, i32_ty, "llvm.amdgcn.sdot8", {falseVal}};
   }
   assert(aElemType.isIntOrFloat() && !aElemType.isIntOrIndex());
   return {1, aElemType, "llvm.fmuladd.f32", {}};
