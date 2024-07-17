@@ -47,7 +47,7 @@ DotOperation chooseInstruction(ConversionPatternRewriter &rewriter,
   if (arch == "gfx908" || arch == "gfx90a" || arch.starts_with("gfx94") ||
       arch.starts_with("gfx11")) {
     if (aElemType.isF16() && dElemType.isF32())
-      return {2, f32_ty, "llvm.amdgcn.fdot2", {false_val()}};
+      return {2, f32_ty, "llvm.amdgcn.fdot2.f16.f16", {}};
     if (aElemType.isSignedInteger(8) && dElemType.isSignedInteger(32))
       return {4, i32_ty, "llvm.amdgcn.sdot8", {false_val()}};
   }
