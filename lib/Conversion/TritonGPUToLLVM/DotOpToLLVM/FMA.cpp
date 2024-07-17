@@ -39,20 +39,20 @@ DotOperation chooseInstruction(ConversionPatternRewriter &rewriter,
                                Location loc, triton::DotOp op) {
   auto aOp = cast<RankedTensorType>(op.getA().getType());
   auto aElemType = aOp.getElementType();
+  auto dOp = cast<RankedTensorType>(op.getD().getType());
+  auto dElemType = dOp.getElementType();
   auto mod = op->getParentOfType<ModuleOp>();
   auto arch = getAMDArch(mod);
   // following architectures support dot instructions
   if (arch == "gfx908" || arch == "gfx90a" || arch.starts_with("gfx94") ||
       arch.starts_with("gfx11")) {
-    auto i1ty = rewriter.getIntegerType(1);
-    auto falseVal = rewriter.create<LLVM::ConstantOp>(loc, i1ty, 0);
-    falseVal.dump();
-    if (aElemType.isF16())
-      return {2, f32_ty, "llvm.amdgcn.fdot2", {falseVal}};
-    if (aElemType.isSignedInteger(8))
-      return {4, i32_ty, "llvm.amdgcn.sdot8", {falseVal}};
+    if (aElemType.isF16() && dElemType.isF32())
+      return {2, f32_ty, "llvm.amdgcn.fdot2", {false_val()}};
+    if (aElemType.isSignedInteger(8) && dElemType.isSignedInteger(32))
+      return {4, i32_ty, "llvm.amdgcn.sdot8", {false_val()}};
   }
   assert(aElemType.isIntOrFloat() && !aElemType.isIntOrIndex());
+  assert(aElemType == dElemType);
   return {1, aElemType, "llvm.fmuladd.f32", {}};
 }
 
