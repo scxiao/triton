@@ -30,10 +30,13 @@ getValueTableFromStructFMA(Value val, int batch, int nonK, int K,
 
 struct DotOperation {
   int vectorSize;
+  Type outElemType;
   StringRef intrinsicName;
+  ValueRange additionalArgs;
 };
 
-DotOperation chooseInstruction(triton::DotOp op) {
+DotOperation chooseInstruction(ConversionPatternRewriter &rewriter,
+                               Location loc, triton::DotOp op) {
   auto aOp = cast<RankedTensorType>(op.getA().getType());
   auto aElemType = aOp.getElementType();
   auto mod = op->getParentOfType<ModuleOp>();
@@ -42,11 +45,12 @@ DotOperation chooseInstruction(triton::DotOp op) {
   if (arch == "gfx908" || arch == "gfx90a" || arch.starts_with("gfx94") ||
       arch.starts_with("gfx11")) {
     if (aElemType.isF16())
-      return {2, "llvm.amdgcn.fdot2"};
+      return {2, f32_ty, "llvm.amdgcn.fdot2", {i1_val(false)}};
     if (aElemType.isSignedInteger(8))
-      return {4, "llvm.amdgcn.sdot8"};
+      return {4, i32_ty, "llvm.amdgcn.sdot8", {i1_val(false)}};
   }
-  return {1, "llvm.fmuladd.f32"};
+  assert(aElemType.isIntOrFloat() && !aElemType.isIntOrIndex());
+  return {1, aElemType, "llvm.fmuladd.f32", {}};
 }
 
 Value packOperand(ConversionPatternRewriter &rewriter, Location loc,
@@ -64,6 +68,18 @@ Value packOperand(ConversionPatternRewriter &rewriter, Location loc,
   return vec;
 }
 
+Value generateDotOp(ConversionPatternRewriter &rewriter, Location loc,
+                    DotOperation op, Value a, Value b, Value c) {
+  SmallVector<Value> args{a, b, c};
+  args.append(op.additionalArgs.begin(), op.additionalArgs.end());
+  SmallVector<Type> argTypes;
+  for (auto arg : args)
+    argTypes.push_back(arg.getType());
+  auto funcType = LLVM::LLVMFunctionType::get(op.outElemType, argTypes);
+  auto d = call(funcType, op.intrinsicName, args);
+  return d.getResult();
+}
+
 LogicalResult convertFMADot(triton::DotOp op, triton::DotOp::Adaptor adaptor,
                             const LLVMTypeConverter *typeConverter,
                             ConversionPatternRewriter &rewriter) {
@@ -77,6 +93,7 @@ LogicalResult convertFMADot(triton::DotOp op, triton::DotOp::Adaptor adaptor,
 
   auto aTensorTy = cast<RankedTensorType>(A.getType());
   auto dTensorTy = cast<RankedTensorType>(D.getType());
+  auto dElemTy = dTensorTy.getElementType();
 
   auto aShapePerCTA = expandMatrixShapeWithBatch(getShapePerCTA(aTensorTy));
   auto dShapePerCTA = expandMatrixShapeWithBatch(getShapePerCTA(dTensorTy));
@@ -108,7 +125,7 @@ LogicalResult convertFMADot(triton::DotOp op, triton::DotOp::Adaptor adaptor,
       getValueTableFromStructFMA(llB, retSize[0], retSize[2], K, rewriter, loc);
 
   SmallVector<Value> ret = cc;
-  auto selectedOp = chooseInstruction(op);
+  auto selectedOp = chooseInstruction(rewriter, loc, op);
 
   for (unsigned b = 0; b < retSize[0]; ++b)
     for (unsigned m = 0; m < retSize[1]; ++m)
@@ -123,8 +140,8 @@ LogicalResult convertFMADot(triton::DotOp op, triton::DotOp::Adaptor adaptor,
               packOperand(rewriter, loc, has, b, m, k, selectedOp.vectorSize);
           auto bOp =
               packOperand(rewriter, loc, hbs, b, n, k, selectedOp.vectorSize);
-          ret[linearIdx] = rewriter.create<mlir::LLVM::FMulAddOp>(
-              loc, aOp, bOp, ret[linearIdx]);
+          ret[linearIdx] = generateDotOp(rewriter, loc, selectedOp, aOp, bOp,
+                                         ret[linearIdx]);
         }
       }
 
