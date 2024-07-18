@@ -55,10 +55,10 @@ DotIntrinsic chooseIntrinsic(ConversionPatternRewriter &rewriter, Location loc,
       chosenOp.additionalArgs = {false_val()};
       return chosenOp;
     }
-    if (aElemTy.isSignedInteger(8) && dElemTy.isSignedInteger(32)) {
+    if (aElemTy.isInteger(8) && dElemTy.isInteger(32)) {
       chosenOp.vectorSize = 4;
       chosenOp.outElemTy = i32_ty;
-      chosenOp.intrinsicName = "llvm.amdgcn.sdot8";
+      chosenOp.intrinsicName = "llvm.amdgcn.sdot4";
       chosenOp.additionalArgs = {false_val()};
       return chosenOp;
     }
@@ -89,6 +89,10 @@ Value packOperand(ConversionPatternRewriter &rewriter, Location loc,
   for (int elem = 0; elem < vectorSize; ++elem) {
     vec = insert_element(vecTy, vec, scalarValues[{b, nonK, k + elem}],
                          i32_val(elem));
+  }
+  if (elemTy.isInteger(8)) {
+    assert(vectorSize == 4);
+    vec = bitcast(vec, i32_ty);
   }
   return vec;
 }

@@ -559,8 +559,8 @@ public:
       // if k % 2 != 0: can not use DOT instruction, continue with FMA
     }
     // Try I8 x I8 -> I32 dot
-    if (dotAvailable && aElTy.isSignedInteger(8) && bElTy.isSignedInteger(8) &&
-        cElTy.isSignedInteger(32) && dElTy.isSignedInteger(32)) {
+    if (dotAvailable && aElTy.isInteger(8) && bElTy.isInteger(8) &&
+        cElTy.isInteger(32) && dElTy.isInteger(32)) {
       if (k % 4 == 0) {
         // nothing to do for this dot
         return failure();
