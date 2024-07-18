@@ -44,34 +44,37 @@ DotIntrinsic chooseIntrinsic(ConversionPatternRewriter &rewriter, Location loc,
   auto mod = op->getParentOfType<ModuleOp>();
   auto arch = getAMDArch(mod);
   DotIntrinsic chosenOp;
-  // following architectures support dot instructions
-  if (arch == "gfx908" || arch == "gfx90a" || arch.starts_with("gfx94") ||
-      arch.starts_with("gfx11")) {
+  bool dotAvailable = arch == "gfx908" || arch == "gfx90a" ||
+                      arch.starts_with("gfx94") || arch.starts_with("gfx11") ||
+                      arch.starts_with("gfx103");
+  if (dotAvailable) {
     if (aElemTy.isF16() && dElemTy.isF32()) {
       chosenOp.vectorSize = 2;
       chosenOp.outElemTy = f32_ty;
       chosenOp.intrinsicName = "llvm.amdgcn.fdot2";
       chosenOp.additionalArgs = {false_val()};
+      return chosenOp;
     }
     if (aElemTy.isSignedInteger(8) && dElemTy.isSignedInteger(32)) {
       chosenOp.vectorSize = 4;
       chosenOp.outElemTy = i32_ty;
       chosenOp.intrinsicName = "llvm.amdgcn.sdot8";
       chosenOp.additionalArgs = {false_val()};
+      return chosenOp;
     }
-  } else {
-    assert(aElemTy.isIntOrFloat() && !aElemTy.isIntOrIndex());
-    assert(aElemTy == dElemTy);
-    assert(cast<RankedTensorType>(op.getA().getType()).getElementType() ==
-           dElemTy);
-    chosenOp.vectorSize = 1;
-    chosenOp.outElemTy = aElemTy;
-    if (aElemTy.isF32())
-      chosenOp.intrinsicName = "llvm.fmuladd.f32";
-    if (aElemTy.isF16())
-      chosenOp.intrinsicName = "llvm.fmuladd.f16";
-    chosenOp.additionalArgs = {};
   }
+  // choose one of FMA intrinsics
+  assert(aElemTy.isIntOrFloat() && !aElemTy.isIntOrIndex());
+  assert(aElemTy == dElemTy);
+  assert(cast<RankedTensorType>(op.getA().getType()).getElementType() ==
+         dElemTy);
+  chosenOp.vectorSize = 1;
+  chosenOp.outElemTy = aElemTy;
+  if (aElemTy.isF32())
+    chosenOp.intrinsicName = "llvm.fmuladd.f32";
+  if (aElemTy.isF16())
+    chosenOp.intrinsicName = "llvm.fmuladd.f16";
+  chosenOp.additionalArgs = {};
   return chosenOp;
 }
 

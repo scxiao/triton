@@ -497,17 +497,35 @@ public:
 
   bool isFloat(Type t) const { return t.isIntOrFloat() && !t.isIntOrIndex(); }
 
-  Value castToElTy(mlir::PatternRewriter &rewriter, Value v, Type newTy) const {
+  Value castToElTy(mlir::PatternRewriter &rewriter, Value v, Type elTy) const {
     Location loc = v.getLoc();
-    if (isFloat(v.getType()) && isFloat(newTy))
-      return rewriter.create<triton::FpToFpOp>(loc, newTy, v);
-    if (!isFloat(v.getType()) && isFloat(newTy))
-      return rewriter.create<mlir::arith::SIToFPOp>(loc, newTy, v);
-    if (isFloat(v.getType()) && !isFloat(newTy))
-      return rewriter.create<mlir::arith::UIToFPOp>(loc, newTy, v);
-    assert(false &&
-           "int -> int cast is unexpected, FMA do not support this case");
+    auto srcTy = cast<RankedTensorType>(v.getType());
+    auto dstTy = srcTy.cloneWith(std::nullopt, elTy);
+    if (srcTy == dstTy)
+      return v;
+    auto srcElTy = srcTy.getElementType();
+    auto dstElTy = dstTy.getElementType();
+    if (isFloat(srcElTy) && isFloat(dstElTy))
+      return rewriter.create<triton::FpToFpOp>(loc, dstTy, v);
+    if (!isFloat(srcElTy) && isFloat(dstElTy))
+      return rewriter.create<mlir::arith::SIToFPOp>(loc, dstTy, v);
+    if (isFloat(srcElTy) && !isFloat(dstElTy))
+      return rewriter.create<mlir::arith::FPToSIOp>(loc, dstTy, v);
+    assert(false && "int -> int cast is unexpected in FMA legalization");
     return Value();
+  }
+
+  bool legalFMAForm(tt::DotOp dotOp) const {
+    auto expectedElTy = dotOp.getA().getType().getElementType();
+    for (auto operand : dotOp.getOperands()) {
+      auto opTy = cast<RankedTensorType>(operand.getType());
+      auto elTy = opTy.getElementType();
+      if (elTy != expectedElTy)
+        return false;
+      if (!elTy.isF16() && !elTy.isF32())
+        return false;
+    }
+    return true;
   }
 
   mlir::LogicalResult
@@ -528,33 +546,43 @@ public:
     int k = a.getType().getShape()[rank - 1];
 
     bool dotAvailable = arch == "gfx908" || arch == "gfx90a" ||
-                        arch.starts_with("gfx94") || arch.starts_with("gfx11");
+                        arch.starts_with("gfx94") ||
+                        arch.starts_with("gfx11") || arch.starts_with("gfx103");
 
     // Try Fp16 x Fp16 -> Fp32 dot
     if (dotAvailable && aElTy.isF16() && bElTy.isF16() && cElTy.isF32() &&
         dElTy.isF32()) {
-      if (k % 2 == 0)
-        return success();
+      if (k % 2 == 0) {
+        // nothing to do for this dot
+        return failure();
+      }
       // if k % 2 != 0: can not use DOT instruction, continue with FMA
     }
     // Try I8 x I8 -> I32 dot
     if (dotAvailable && aElTy.isSignedInteger(8) && bElTy.isSignedInteger(8) &&
         cElTy.isSignedInteger(32) && dElTy.isSignedInteger(32)) {
-      if (k % 4 == 0)
-        return success();
+      if (k % 4 == 0) {
+        // nothing to do for this dot
+        return failure();
+      }
       // if k % 4 != 0: can not use DOT instruction, continue with FMA
     }
 
-    // Convert operands to one FP type to apply FMA case
-    unsigned maxBitsize =
-        std::max(aElTy.getIntOrFloatBitWidth(), bElTy.getIntOrFloatBitWidth());
-    maxBitsize = std::max(maxBitsize, std::max(cElTy.getIntOrFloatBitWidth(),
-                                               dElTy.getIntOrFloatBitWidth()));
+    // check that dot is not legalized already
+    if (legalFMAForm(dotOp)) {
+      return failure();
+    }
 
-    // Adjust to minimal available FMA bitwidth
-    maxBitsize = std::max(maxBitsize, 16u);
+    // Legalize dot for FMA case
+
+    // find common type, larger or equal of all operand types
+    unsigned maxBitsize = 16;
+    for (auto operand : dotOp.getOperands()) {
+      auto opTy = cast<RankedTensorType>(operand.getType());
+      auto elTy = opTy.getElementType();
+      maxBitsize = std::max(maxBitsize, elTy.getIntOrFloatBitWidth());
+    }
     assert(maxBitsize <= 32);
-
     Type commonTy =
         maxBitsize == 16 ? rewriter.getF16Type() : rewriter.getF32Type();
 
