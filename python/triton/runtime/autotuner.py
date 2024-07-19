@@ -6,7 +6,7 @@ import time
 import inspect
 from typing import Dict
 
-from ..testing import do_bench, do_bench_cudagraph
+from ..testing import do_bench, do_bench_cudagraph, do_bench_rotating_tensor
 from .jit import KernelInterface
 from .errors import OutOfResources
 
@@ -27,6 +27,7 @@ class Autotuner(KernelInterface):
         warmup=25,
         rep=100,
         use_cuda_graph=False,
+        use_rotating_tensor=False,
     ):
         """
         :param prune_configs_by: a dict of functions that are used to prune configs, fields:
@@ -92,10 +93,10 @@ class Autotuner(KernelInterface):
         self.num_reps = rep
         import torch
         self.use_cuda_graph = use_cuda_graph and torch.cuda.is_available()
+        self.use_rotating_tensor = use_rotating_tensor
 
     def _bench(self, *args, config, **meta):
         from ..compiler.errors import CompileTimeAssertionFailure
-
         # check for conflicts, i.e. meta-parameters both provided
         # as kwargs and by the autotuner
         conflicts = meta.keys() & config.kwargs.keys()
@@ -124,12 +125,33 @@ class Autotuner(KernelInterface):
 
             self.post_hook(args, exception=None)
 
+        def kernel_call_rotating_tesnor(i):
+            if config.pre_hook:
+                config.pre_hook(full_nargs)
+            self.pre_hook(args)
+            try:
+                self.fn.run(
+                    *args,
+                    **current,
+                )
+            except Exception as e:
+                try:
+                    self.post_hook(args, exception=e)
+                finally:
+                    # Throw exception raised by `self.fn.run`
+                    raise
+
+            self.post_hook(args, exception=None)
+
         try:
             if self.use_cuda_graph:
                 import torch
                 with torch.cuda.stream(torch.cuda.Stream()):
                     bench_res = do_bench_cudagraph(kernel_call, rep=self.num_reps, return_mode="median")
                 return bench_res
+            elif self.use_rotating_tensor:
+                return do_bench_rotating_tensor(kernel_call_rotating_tesnor, warmup=self.num_warmups, rep=self.num_reps, quantiles=(0.5, 0.2, 0.8))
+            
             return do_bench(kernel_call, warmup=self.num_warmups, rep=self.num_reps, quantiles=(0.5, 0.2, 0.8))
         except (OutOfResources, CompileTimeAssertionFailure):
             return float("inf") if self.use_cuda_graph else [float("inf"), float("inf"), float("inf")]
@@ -263,7 +285,7 @@ class Config:
 
 
 def autotune(configs, key, prune_configs_by=None, reset_to_zero=None, restore_value=None, pre_hook=None, post_hook=None,
-             warmup=25, rep=100, use_cuda_graph=False):
+             warmup=25, rep=100, use_cuda_graph=False, use_rotating_tensor=False):
     """
     Decorator for auto-tuning a :code:`triton.jit`'d function.
 
@@ -320,7 +342,7 @@ def autotune(configs, key, prune_configs_by=None, reset_to_zero=None, restore_va
     def decorator(fn):
         return Autotuner(fn, fn.arg_names, configs, key, reset_to_zero, restore_value, pre_hook=pre_hook,
                          post_hook=post_hook, prune_configs_by=prune_configs_by, warmup=warmup, rep=rep,
-                         use_cuda_graph=use_cuda_graph)
+                         use_cuda_graph=use_cuda_graph, use_rotating_tensor=use_rotating_tensor)
 
     return decorator
 
