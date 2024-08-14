@@ -129,39 +129,37 @@ def _triton_gemm_a8w8_kernel(
     ram = tl.max_contiguous(tl.multiple_of(rm % M, BLOCK_M), BLOCK_M)
     rbn = tl.max_contiguous(tl.multiple_of(rn % N, BLOCK_N), BLOCK_N)
     rk = tl.arange(0, BLOCK_K)
-    A = A + (ram[:, None] * stride_am + rk[None, :] * stride_ak)
-    B = B + (rbn[None, :] * stride_bn + rk[:, None] * stride_bk)
+    a_ptrs = A + (ram[:, None] * stride_am + rk[None, :] * stride_ak)
+    b_ptrs = B + (rbn[None, :] * stride_bn + rk[:, None] * stride_bk)
     # -----------------------------------------------------------
     # Iterate to compute a block of the C matrix.
     # _0 = tl.zeros([1, 1], dtype=A.dtype.element_ty)
     acc_type = tl.int32 if A.dtype.element_ty == tl.int8 else tl.float32
     accumulator = tl.zeros([BLOCK_M, BLOCK_N], dtype=acc_type)
-    for k in range(0, tl.cdiv(K, BLOCK_K) - 1):
+    loop_k = tl.cdiv(K, BLOCK_K)
+    if not EVEN_K:
+        loop_k -= 1
+
+    for _ in range(0, loop_k):
         # Load the next block of A and B, generate a mask by checking the K dimension.
         # If it is out of bounds, set it to 0.
-        if EVEN_K:
-            a = tl.load(A)
-            b = tl.load(B)
-        else:
-            k_remaining = K - k * BLOCK_K
-            a = tl.load(A, mask=rk[None, :] < k_remaining, other=0.)
-            b = tl.load(B, mask=rk[:, None] < k_remaining, other=0.)
+        a = tl.load(a_ptrs)
+        b = tl.load(b_ptrs)
         # We accumulate along the K dimension.
         accumulator += tl.dot(a, b)
         # Advance the ptrs to the next K block.
-        A += BLOCK_K * stride_ak
-        B += BLOCK_K * stride_bk
+        a_ptrs += BLOCK_K * stride_ak
+        b_ptrs += BLOCK_K * stride_bk
 
-    if EVEN_K:
-        a = tl.load(A)
-        b = tl.load(B)
-    else:
-        k = tl.cdiv(K, BLOCK_K) - 1
-        k_remaining = K - k * BLOCK_K
-        a = tl.load(A, mask=rk[None, :] < k_remaining, other=0.)
-        b = tl.load(B, mask=rk[:, None] < k_remaining, other=0.)
-    # We accumulate along the K dimension.
-    accumulator += tl.dot(a, b)
+    if not EVEN_K:
+        k = loop_k
+        offs_k = k * BLOCK_K + tl.arange(0, BLOCK_K)
+        a_ptrs = A + (ram[:, None] * stride_am + offs_k[None, :] * stride_ak)
+        b_ptrs = B + (rbn[None, :] * stride_bn + offs_k[:, None] * stride_bk)
+        a = tl.load(a_ptrs, mask=offs_k[None, :] < K, other=0.)
+        b = tl.load(b_ptrs, mask=offs_k[:, None] < K, other=0.)
+        # We accumulate along the K dimension.
+        accumulator += tl.dot(a, b)
 
 
     # -----------------------------------------------------------
@@ -220,18 +218,18 @@ def gemm_a8w8_forward(out, a, b, alpha_row, alpha_col):
 
 def get_shapes():
     shapes = [
-        (1, 13312, 8192)
+        # (1, 13312, 8192)
         # (i, 13312, 8896) for i in (1, 10, 20, 30, 40)] +\
         #      [(i, 17792, 13312) for i in (1, 10, 20, 30, 40)] +\
         #      [(i, 1920, 13312) for i in (1, 10, 20, 30, 40)] +\
         #      [(i, 13312, 1664) for i in (1, 10, 20, 30, 40)
 
-        #     (i, 13312, 8896) for i in (1, 10, 20, 30, 40, 764, 1024, 2048, 4096)] +\
-        #      [(i, 17792, 13312) for i in (1, 10, 20, 30, 40, 764, 1024, 2048, 4096)] +\
-        #      [(i, 1920, 13312) for i in (1, 10, 20, 30, 40, 764, 1024, 2048, 4096)] +\
-        #      [(i, 13312, 1664) for i in (1, 10, 20, 30, 40, 764, 1024, 2048, 4096)] +\
-        # [(8192, 8192, 8192),
-        # (8192, 8192, 16384)
+            (i, 13312, 8896) for i in (1, 10, 20, 30, 40, 764, 1024, 2048, 4096)] +\
+             [(i, 17792, 13312) for i in (1, 10, 20, 30, 40, 764, 1024, 2048, 4096)] +\
+             [(i, 1920, 13312) for i in (1, 10, 20, 30, 40, 764, 1024, 2048, 4096)] +\
+             [(i, 13312, 1664) for i in (1, 10, 20, 30, 40, 764, 1024, 2048, 4096)] +\
+        [(8192, 8192, 8192),
+        (8192, 8192, 16384)
         ]
     return shapes
 
