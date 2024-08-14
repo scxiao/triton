@@ -101,19 +101,28 @@ define amdgpu_kernel void @_triton_gemm_a8w8_kernel(ptr addrspace(1) nocapture r
   %82 = phi i32 [ 0, %.lr.ph ], [ %97, %79 ]
   %83 = phi i32 [ 0, %.lr.ph ], [ %98, %79 ]
   %84 = phi i32 [ 0, %.lr.ph ], [ %99, %79 ]
+  %.extract54 = load i64, ptr addrspace(1) %.pn42.pn58, align 16, !dbg !38
+  %.extract56 = load i64, ptr addrspace(1) %.pn42.pn58, align 8, !dbg !38
+  
   %.pn42 = getelementptr i8, ptr addrspace(1) %.pn42.pn58, i64 64, !dbg !36
   %.pn10 = getelementptr i8, ptr addrspace(1) %.pn10.pn57, i64 64, !dbg !37
-  %85 = addrspacecast ptr addrspace(1) %.pn10 to ptr, !dbg !33
-  %86 = load <4 x i8>, ptr %85, align 4, !dbg !33
-  %87 = addrspacecast ptr addrspace(1) %.pn42 to ptr, !dbg !34
-  %88 = load <16 x i8>, ptr %87, align 16, !dbg !34
+;  %85 = addrspacecast ptr addrspace(1) %.pn10 to ptr, !dbg !33
+;  %86 = load <4 x i8>, ptr %85, align 4, !dbg !33
+;  %87 = addrspacecast ptr addrspace(1) %.pn42 to ptr, !dbg !34
+;  %88 = load <16 x i8>, ptr %87, align 16, !dbg !34
   fence syncscope("workgroup") release, !dbg !33
   tail call void @llvm.amdgcn.s.barrier(), !dbg !33
   fence syncscope("workgroup") acquire, !dbg !33
+
+; backup original llir code
+;  %.extract50 = load i64, ptr addrspace(3) %69, align 16, !dbg !38
+;  %.extract52 = load i64, ptr addrspace(3) %77, align 8, !dbg !38
+;  %.extract54 = load i64, ptr addrspace(3) %76, align 16, !dbg !38
+;  %.extract56 = load i64, ptr addrspace(3) %78, align 8, !dbg !38
+
   %.extract50 = load i64, ptr addrspace(3) %69, align 16, !dbg !38
   %.extract52 = load i64, ptr addrspace(3) %77, align 8, !dbg !38
-  %.extract54 = load i64, ptr addrspace(3) %76, align 16, !dbg !38
-  %.extract56 = load i64, ptr addrspace(3) %78, align 8, !dbg !38
+
   %89 = insertelement <4 x i32> poison, i32 %80, i64 0, !dbg !38
   %90 = insertelement <4 x i32> %89, i32 %81, i64 1, !dbg !38
   %91 = insertelement <4 x i32> %90, i32 %82, i64 2, !dbg !38
@@ -124,11 +133,11 @@ define amdgpu_kernel void @_triton_gemm_a8w8_kernel(ptr addrspace(1) nocapture r
   %96 = extractelement <4 x i32> %94, i64 1, !dbg !38
   %97 = extractelement <4 x i32> %94, i64 2, !dbg !38
   %98 = extractelement <4 x i32> %94, i64 3, !dbg !38
-  fence syncscope("workgroup") release, !dbg !33
-  tail call void @llvm.amdgcn.s.barrier(), !dbg !33
-  fence syncscope("workgroup") acquire, !dbg !33
-  store <4 x i8> %86, ptr addrspace(3) %51, align 4, !dbg !33
-  store <16 x i8> %88, ptr addrspace(3) %60, align 16, !dbg !34
+;  fence syncscope("workgroup") release, !dbg !33
+;  tail call void @llvm.amdgcn.s.barrier(), !dbg !33
+;  fence syncscope("workgroup") acquire, !dbg !33
+;  store <4 x i8> %86, ptr addrspace(3) %51, align 4, !dbg !33
+;  store <16 x i8> %88, ptr addrspace(3) %60, align 16, !dbg !34
   %99 = add nuw nsw i32 %84, 1, !dbg !35
   %100 = icmp slt i32 %99, %61, !dbg !35
   br i1 %100, label %79, label %._crit_edge, !dbg !35
@@ -147,9 +156,15 @@ define amdgpu_kernel void @_triton_gemm_a8w8_kernel(ptr addrspace(1) nocapture r
   %.extract = load i64, ptr addrspace(3) %105, align 16, !dbg !38
   %107 = getelementptr inbounds i8, ptr addrspace(3) %105, i64 8, !dbg !38
   %.extract44 = load i64, ptr addrspace(3) %107, align 8, !dbg !38
-  %.extract46 = load i64, ptr addrspace(3) %106, align 16, !dbg !38
+
+;  %.extract46 = load i64, ptr addrspace(3) %106, align 16, !dbg !38
+;  %108 = getelementptr inbounds i8, ptr addrspace(3) %106, i64 8, !dbg !38
+;  %.extract48 = load i64, ptr addrspace(3) %108, align 8, !dbg !38
+
+  %.extract46 = load i64, ptr %52, align 16, !dbg !38
   %108 = getelementptr inbounds i8, ptr addrspace(3) %106, i64 8, !dbg !38
-  %.extract48 = load i64, ptr addrspace(3) %108, align 8, !dbg !38
+  %.extract48 = load i64, ptr %52, align 8, !dbg !38
+
   %109 = insertelement <4 x i32> poison, i32 %101, i64 0, !dbg !38
   %110 = insertelement <4 x i32> %109, i32 %102, i64 1, !dbg !38
   %111 = insertelement <4 x i32> %110, i32 %103, i64 2, !dbg !38
@@ -249,6 +264,7 @@ define amdgpu_kernel void @_triton_gemm_a8w8_kernel(ptr addrspace(1) nocapture r
   %192 = fmul float %191, %154, !dbg !50
   %193 = fmul float %192, %163, !dbg !51
   %194 = fptrunc float %193 to half, !dbg !52
+  
   %195 = mul i32 %121, %9, !dbg !54
   %196 = sext i32 %195 to i64, !dbg !55
   %197 = getelementptr half, ptr addrspace(1) %2, i64 %196, !dbg !55
