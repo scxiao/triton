@@ -5,7 +5,9 @@ import triton.language as tl
 import re
 import pytest
 
-#This version is based on version 5 contains peel off last iteration
+#This version is based on version 7 to use bypassLDS, so it contains
+# 1. peel off last iteration
+# 2. bypassLDS
 
 def is_hip():
     return triton.runtime.driver.active.get_current_target().backend == "hip"
@@ -42,22 +44,25 @@ def _get_a8w8_configs():
         # triton.Config({'BLOCK_M': 32, 'BLOCK_N': 64, 'BLOCK_K': 32, 'GROUP_SIZE_M': 8, 'matrix_instr_nonkdim': 16, 'kpack': 1}, num_stages=0, num_warps=2),
         # triton.Config({'BLOCK_M': 128, 'BLOCK_N': 64, 'BLOCK_K': 128, 'GROUP_SIZE_M': 1, 'matrix_instr_nonkdim': 16, 'kpack': 1}, num_stages=0, num_warps=4),
 
-        triton.Config({'BLOCK_M': 16, 'BLOCK_N': 64, 'BLOCK_K': 128, 'GROUP_SIZE_M': 1, 'matrix_instr_nonkdim': 16, 'kpack': 2}, num_stages=0, num_warps=4),
-        triton.Config({'BLOCK_M': 16, 'BLOCK_N': 32, 'BLOCK_K': 128, 'GROUP_SIZE_M': 1, 'matrix_instr_nonkdim': 16, 'kpack': 2}, num_stages=0, num_warps=2),
-        triton.Config({'BLOCK_M': 32, 'BLOCK_N': 64, 'BLOCK_K': 128, 'GROUP_SIZE_M': 1, 'matrix_instr_nonkdim': 16, 'kpack': 2}, num_stages=0, num_warps=4),
-        triton.Config({'BLOCK_M': 32, 'BLOCK_N': 32, 'BLOCK_K': 128, 'GROUP_SIZE_M': 1, 'matrix_instr_nonkdim': 16, 'kpack': 1}, num_stages=0, num_warps=2),
-        triton.Config({'BLOCK_M': 64, 'BLOCK_N': 64, 'BLOCK_K': 128, 'GROUP_SIZE_M': 1, 'matrix_instr_nonkdim': 16, 'kpack': 1}, num_stages=0, num_warps=4),
-        triton.Config({'BLOCK_M': 64, 'BLOCK_N': 64, 'BLOCK_K': 256, 'GROUP_SIZE_M': 1, 'matrix_instr_nonkdim': 16, 'kpack': 2}, num_stages=0, num_warps=4),
-        triton.Config({'BLOCK_M': 16, 'BLOCK_N': 64, 'BLOCK_K': 256, 'GROUP_SIZE_M': 1, 'matrix_instr_nonkdim': 16, 'kpack': 2}, num_stages=0, num_warps=4),
-        triton.Config({'BLOCK_M': 32, 'BLOCK_N': 64, 'BLOCK_K': 256, 'GROUP_SIZE_M': 1, 'matrix_instr_nonkdim': 16, 'kpack': 2}, num_stages=0, num_warps=4),
-        triton.Config({'BLOCK_M': 64, 'BLOCK_N': 128, 'BLOCK_K': 128, 'GROUP_SIZE_M': 1, 'matrix_instr_nonkdim': 16, 'kpack': 2}, num_stages=0, num_warps=4),
-        triton.Config({'BLOCK_M': 16, 'BLOCK_N': 32, 'BLOCK_K': 256, 'GROUP_SIZE_M': 1, 'matrix_instr_nonkdim': 16, 'kpack': 2}, num_stages=0, num_warps=2),
-        triton.Config({'BLOCK_M': 32, 'BLOCK_N': 64, 'BLOCK_K': 256, 'GROUP_SIZE_M': 1, 'matrix_instr_nonkdim': 16, 'kpack': 2}, num_stages=0, num_warps=4),
-        triton.Config({'BLOCK_M': 16, 'BLOCK_N': 32, 'BLOCK_K': 256, 'GROUP_SIZE_M': 1, 'matrix_instr_nonkdim': 16, 'kpack': 2}, num_stages=0, num_warps=2),
-        triton.Config({'BLOCK_M': 16, 'BLOCK_N': 32, 'BLOCK_K': 128, 'GROUP_SIZE_M': 1, 'matrix_instr_nonkdim': 16, 'kpack': 2}, num_stages=0, num_warps=2),
-        triton.Config({'BLOCK_M': 16, 'BLOCK_N': 64, 'BLOCK_K': 128, 'GROUP_SIZE_M': 1, 'matrix_instr_nonkdim': 16, 'kpack': 2}, num_stages=0, num_warps=2),
-        triton.Config({'BLOCK_M': 32, 'BLOCK_N': 64, 'BLOCK_K': 128, 'GROUP_SIZE_M': 1, 'matrix_instr_nonkdim': 16, 'kpack': 2}, num_stages=0, num_warps=4),
-        triton.Config({'BLOCK_M': 32, 'BLOCK_N': 64, 'BLOCK_K': 128, 'GROUP_SIZE_M': 1, 'matrix_instr_nonkdim': 16, 'kpack': 1}, num_stages=0, num_warps=4),
+        # triton.Config({'BLOCK_M': 16, 'BLOCK_N': 128, 'BLOCK_K': 256, 'GROUP_SIZE_M': 1, 'matrix_instr_nonkdim': 16, 'kpack': 2}, num_stages=0, num_warps=8),
+        triton.Config({'BLOCK_M': 32, 'BLOCK_N': 128, 'BLOCK_K': 256, 'GROUP_SIZE_M': 1, 'matrix_instr_nonkdim': 16, 'kpack': 2}, num_stages=0, num_warps=8),
+        triton.Config({'BLOCK_M': 16, 'BLOCK_N': 128, 'BLOCK_K': 256, 'GROUP_SIZE_M': 1, 'matrix_instr_nonkdim': 16, 'kpack': 2}, num_stages=0, num_warps=8),
+
+        # triton.Config({'BLOCK_M': 16, 'BLOCK_N': 64, 'BLOCK_K': 128, 'GROUP_SIZE_M': 1, 'matrix_instr_nonkdim': 16, 'kpack': 2}, num_stages=0, num_warps=4),
+        # triton.Config({'BLOCK_M': 16, 'BLOCK_N': 32, 'BLOCK_K': 128, 'GROUP_SIZE_M': 1, 'matrix_instr_nonkdim': 16, 'kpack': 2}, num_stages=0, num_warps=2),
+        # triton.Config({'BLOCK_M': 32, 'BLOCK_N': 64, 'BLOCK_K': 128, 'GROUP_SIZE_M': 1, 'matrix_instr_nonkdim': 16, 'kpack': 2}, num_stages=0, num_warps=4),
+        # triton.Config({'BLOCK_M': 32, 'BLOCK_N': 32, 'BLOCK_K': 128, 'GROUP_SIZE_M': 1, 'matrix_instr_nonkdim': 16, 'kpack': 1}, num_stages=0, num_warps=2),
+        # triton.Config({'BLOCK_M': 64, 'BLOCK_N': 64, 'BLOCK_K': 128, 'GROUP_SIZE_M': 1, 'matrix_instr_nonkdim': 16, 'kpack': 1}, num_stages=0, num_warps=4),
+        # triton.Config({'BLOCK_M': 64, 'BLOCK_N': 64, 'BLOCK_K': 256, 'GROUP_SIZE_M': 1, 'matrix_instr_nonkdim': 16, 'kpack': 2}, num_stages=0, num_warps=4),
+        # triton.Config({'BLOCK_M': 16, 'BLOCK_N': 64, 'BLOCK_K': 256, 'GROUP_SIZE_M': 1, 'matrix_instr_nonkdim': 16, 'kpack': 2}, num_stages=0, num_warps=4),
+        # triton.Config({'BLOCK_M': 32, 'BLOCK_N': 64, 'BLOCK_K': 256, 'GROUP_SIZE_M': 1, 'matrix_instr_nonkdim': 16, 'kpack': 2}, num_stages=0, num_warps=4),
+        # triton.Config({'BLOCK_M': 64, 'BLOCK_N': 128, 'BLOCK_K': 128, 'GROUP_SIZE_M': 1, 'matrix_instr_nonkdim': 16, 'kpack': 2}, num_stages=0, num_warps=4),
+        # triton.Config({'BLOCK_M': 32, 'BLOCK_N': 64, 'BLOCK_K': 256, 'GROUP_SIZE_M': 1, 'matrix_instr_nonkdim': 16, 'kpack': 2}, num_stages=0, num_warps=4),
+        # triton.Config({'BLOCK_M': 16, 'BLOCK_N': 32, 'BLOCK_K': 256, 'GROUP_SIZE_M': 1, 'matrix_instr_nonkdim': 16, 'kpack': 2}, num_stages=0, num_warps=2),
+        # triton.Config({'BLOCK_M': 16, 'BLOCK_N': 32, 'BLOCK_K': 128, 'GROUP_SIZE_M': 1, 'matrix_instr_nonkdim': 16, 'kpack': 2}, num_stages=0, num_warps=2),
+        # triton.Config({'BLOCK_M': 16, 'BLOCK_N': 64, 'BLOCK_K': 128, 'GROUP_SIZE_M': 1, 'matrix_instr_nonkdim': 16, 'kpack': 2}, num_stages=0, num_warps=2),
+        # triton.Config({'BLOCK_M': 32, 'BLOCK_N': 64, 'BLOCK_K': 128, 'GROUP_SIZE_M': 1, 'matrix_instr_nonkdim': 16, 'kpack': 2}, num_stages=0, num_warps=4),
+        # triton.Config({'BLOCK_M': 32, 'BLOCK_N': 64, 'BLOCK_K': 128, 'GROUP_SIZE_M': 1, 'matrix_instr_nonkdim': 16, 'kpack': 1}, num_stages=0, num_warps=4),
     ] if is_hip() else [
         triton.Config({'BLOCK_M': 128, 'BLOCK_N': 256, 'BLOCK_K': 64, 'GROUP_SIZE_M': 8}, num_stages=3, num_warps=8),
         triton.Config({'BLOCK_M': 64, 'BLOCK_N': 256, 'BLOCK_K': 32, 'GROUP_SIZE_M': 8}, num_stages=4, num_warps=4),
@@ -162,8 +167,6 @@ def _triton_gemm_a8w8_kernel(
         b = tl.load(b_ptrs, mask=offs_k[:, None] < K, other=0.)
         # We accumulate along the K dimension.
         accumulator += tl.dot(a, b)
-
-
     # -----------------------------------------------------------
     # `alpha_row_ptrs` is a block of [BLOCK_M] pointers
     # `alpha_col_ptrs` is a block of [BLOCK_N] pointers
@@ -215,17 +218,17 @@ def gemm_a8w8_forward(out, a, b, alpha_row, alpha_col):
     def grid(META):
         return (triton.cdiv(M, META['BLOCK_M']) * triton.cdiv(N, META['BLOCK_N']), 1, 1)
  
-    # _triton_gemm_a8w8_kernel[grid](*kwargs, enable_moe_lds_bypass=True)
-    _triton_gemm_a8w8_kernel[grid](*kwargs)
+    _triton_gemm_a8w8_kernel[grid](*kwargs, enable_moe_lds_bypass=True)
+    # _triton_gemm_a8w8_kernel[grid](*kwargs)
  
 
 def get_shapes():
     shapes = [
-        # (40, 17792, 13312)
-        (i, 13312, 8896) for i in (1, 10, 20, 30, 40)] +\
-             [(i, 17792, 13312) for i in (1, 10, 20, 30, 40)] +\
-             [(i, 1920, 13312) for i in (1, 10, 20, 30, 40)] +\
-             [(i, 13312, 1664) for i in (1, 10, 20, 30, 40)
+        # (10, 17792, 13312)
+        # (i, 13312, 8896) for i in (1, 10, 20, 30, 40)] +\
+             (i, 17792, 13312) for i in (1, 10, 20, 30, 40)] +\
+             [(i, 1920, 13312) for i in (1, 10, 20, 30, 40)
+            #  [(i, 13312, 1664) for i in (1, 10, 20, 30, 40)
 
         #     (i, 13312, 8896) for i in (1, 10, 20, 30, 40, 764, 1024, 2048, 4096)] +\
         #      [(i, 17792, 13312) for i in (1, 10, 20, 30, 40, 764, 1024, 2048, 4096)] +\
@@ -319,6 +322,15 @@ def num_tensors(M, N, K):
     return num 
 
 
+def shuffle_weight(BN, BK, N, K, b):
+    b = b.view(N//BN, BN//16, 16, K//BK, BK//64, 4, 16)
+    b = b.permute(0,4,1,5,3,2,6)
+    b = b.contiguous()
+    b = b.view(N,K)
+
+    return b
+
+
 # %%
 # Benchmark
 # ---------
@@ -351,9 +363,15 @@ def benchmark(M, N, K, provider):
     alpha_col = []
     out = []
 
+    BN = 128
+    BK = 256
+
     for i in range(tensor_num):
         a_tmp, _ = gen_input(M, K, in_dtype, False, 1, device='cuda')
-        b_tmp, _ = gen_input(K, N, in_dtype, True, 2, device='cuda')
+        b_tmp, _ = gen_input(N, K, in_dtype, True, 2, device='cuda')
+
+        b_tmp = shuffle_weight(BN, BK, N, K, b_tmp)
+
         alpha_row_tmp = torch.rand([M, 1], dtype=torch.half).cuda()
         alpha_col_tmp = torch.rand([1, N], dtype=torch.half).cuda()
         out_tmp = torch.empty([M, N], dtype=torch.half, device='cuda')
@@ -366,16 +384,20 @@ def benchmark(M, N, K, provider):
 
     quantiles = [0.5, 0.2, 0.8]
  
+    #tmp = torch.empty([BN, BK], dtype=b.dtype, device=b.device)
+    #b = shuffle_tensor(b, BK, BN, tmp)
+
+
     if 'torch' in provider:
         gemm_a8w8 = TorchGemmA8W8()
         ms, min_ms, max_ms = triton.testing.do_bench_rotating_tensor(
-            lambda i: gemm_a8w8(a[i % tensor_num], b[i % tensor_num], alpha_row[i % tensor_num], alpha_col[i % tensor_num]), rep=100, quantiles=quantiles
+            lambda i: gemm_a8w8(a[i % tensor_num], b[i % tensor_num].T, alpha_row[i % tensor_num], alpha_col[i % tensor_num]), rep=100, quantiles=quantiles
         )
     else: 
         assert 'triton' in provider
         # out = torch.empty([a.shape[0], b.shape[1]], dtype=torch.half, device=a.device)
         ms, min_ms, max_ms = triton.testing.do_bench_rotating_tensor(
-            lambda i: gemm_a8w8_forward(out[i % tensor_num], a[i % tensor_num], b[i % tensor_num], alpha_row[i % tensor_num], alpha_col[i % tensor_num]), rep=100, quantiles=quantiles
+            lambda i: gemm_a8w8_forward(out[i % tensor_num], a[i % tensor_num], b[i % tensor_num].T, alpha_row[i % tensor_num], alpha_col[i % tensor_num]), rep=100, quantiles=quantiles
         )
         # ms, min_ms, max_ms = triton.testing.do_bench(
         #     lambda: gemm_a8w8_forward(out[0], a[0], b[0], alpha_row[0], alpha_col[0]), rep=100, quantiles=quantiles
@@ -398,18 +420,25 @@ def test_gemm_a8w8(m, n, k):
     torch.random.manual_seed(0)
     with torch.no_grad():
         # a = torch.randint(-12, 12, (m, k), dtype=torch.int8).cuda()
-        # b = torch.randint(-12, 12, (n, k), dtype=torch.int8).cuda().T
+        # b = torch.randint(-12, 12, (n, k), dtype=torch.int8).cuda()
 
         a, _ = gen_input(m, k, 'int8', False, 1, device='cuda')
-        b, _ = gen_input(k, n, 'int8', True, 2, device='cuda')
-
+        b, _ = gen_input(n, k, 'int8', False, 2, device='cuda')
         alpha_row = torch.rand([m, 1], dtype=torch.half).cuda()
         alpha_col = torch.rand([1, n], dtype=torch.half).cuda()
 
         gemm_a8w8 = TorchGemmA8W8()
-        out_torch = gemm_a8w8(a, b, alpha_row=alpha_row, alpha_col=alpha_col)
-        out_triton = torch.empty([a.shape[0], b.shape[1]], dtype=torch.half, device=a.device)
-        gemm_a8w8_forward(out_triton, a, b, alpha_row, alpha_col)
+        out_torch = gemm_a8w8(a, b.T, alpha_row=alpha_row, alpha_col=alpha_col)
+
+        #BM = block_m
+        BN = 128
+        BK = 256
+        b = shuffle_weight(BN, BK, n, k, b)
+        #tmp = torch.empty([BN, BK], dtype=b.dtype, device=b.device)
+        #b = shuffle_tensor(b, BK, BN, tmp)
+
+        out_triton = torch.empty([a.shape[0], b.shape[0]], dtype=torch.half, device=a.device)
+        gemm_a8w8_forward(out_triton, a, b.T, alpha_row, alpha_col)
         print(f"M = {m}, N = {n}, K = {k}, best_config = {_triton_gemm_a8w8_kernel.best_config}")
 
         diff = ~np.isclose(out_triton.half().cpu().numpy(), out_torch.half().cpu().numpy(), rtol=1e-2)
