@@ -45,7 +45,8 @@ def _get_a8w8_configs():
         # triton.Config({'BLOCK_M': 128, 'BLOCK_N': 64, 'BLOCK_K': 128, 'GROUP_SIZE_M': 1, 'matrix_instr_nonkdim': 16, 'kpack': 1}, num_stages=0, num_warps=4),
 
         triton.Config({'BLOCK_M': 16, 'BLOCK_N': 128, 'BLOCK_K': 256, 'GROUP_SIZE_M': 1, 'matrix_instr_nonkdim': 16, 'kpack': 2}, num_stages=0, num_warps=8),
-        triton.Config({'BLOCK_M': 32, 'BLOCK_N': 128, 'BLOCK_K': 256, 'GROUP_SIZE_M': 1, 'matrix_instr_nonkdim': 16, 'kpack': 2}, num_stages=0, num_warps=8),
+        # triton.Config({'BLOCK_M': 32, 'BLOCK_N': 128, 'BLOCK_K': 256, 'GROUP_SIZE_M': 1, 'matrix_instr_nonkdim': 16, 'kpack': 2}, num_stages=0, num_warps=8),
+
         # triton.Config({'BLOCK_M': 16, 'BLOCK_N': 64, 'BLOCK_K': 128, 'GROUP_SIZE_M': 1, 'matrix_instr_nonkdim': 16, 'kpack': 2}, num_stages=0, num_warps=4),
         # triton.Config({'BLOCK_M': 16, 'BLOCK_N': 32, 'BLOCK_K': 128, 'GROUP_SIZE_M': 1, 'matrix_instr_nonkdim': 16, 'kpack': 2}, num_stages=0, num_warps=2),
         # triton.Config({'BLOCK_M': 32, 'BLOCK_N': 64, 'BLOCK_K': 128, 'GROUP_SIZE_M': 1, 'matrix_instr_nonkdim': 16, 'kpack': 2}, num_stages=0, num_warps=4),
@@ -226,11 +227,11 @@ def gemm_a8w8_forward(out, a, b, alpha_row, alpha_col):
 
 def get_shapes():
     shapes = [
-        # (1, 13312, 1664)
-        (i, 13312, 8896) for i in (1, 10, 20, 30, 40)] +\
-             [(i, 17792, 13312) for i in (1, 10, 20, 30, 40)] +\
-             [(i, 1920, 13312) for i in (1, 10, 20, 30, 40)] +\
-             [(i, 13312, 1664) for i in (1, 10, 20, 30, 40)
+        (1, 13312, 8896)
+        # (i, 13312, 8896) for i in (1, 10, 20, 30, 40)] +\
+        #      [(i, 17792, 13312) for i in (1, 10, 20, 30, 40)] +\
+        #      [(i, 1920, 13312) for i in (1, 10, 20, 30, 40)] +\
+        #      [(i, 13312, 1664) for i in (1, 10, 20, 30, 40)
 
         #     (i, 13312, 8896) for i in (1, 10, 20, 30, 40, 764, 1024, 2048, 4096)] +\
         #      [(i, 17792, 13312) for i in (1, 10, 20, 30, 40, 764, 1024, 2048, 4096)] +\
@@ -265,6 +266,7 @@ name_to_tl_types = {
     'fp8e4': tl.float8e4b8,
     'fp8e5': tl.float8e5b16,
 }
+
 
 def gen_input(M, N, ty_name, needTrans, seed, device='cuda'):
     d_type = name_to_tl_types[ty_name]
@@ -326,6 +328,8 @@ def num_tensors(M, N, K):
 
 
 # pre-shuffle the weight tensor to corresponding mfma dot_op layout
+# for tuning config BLOCK_K=256, BLOCK_N=128, num_warps=8, and kpack=2
+# instruction size mfma16x16x32_int8
 def shuffle_weight_tensor(BN, BK, N, K, b):
     b = b.view(N//BN, BN//16, 16, K//BK, BK//64, 4, 16)
     b = b.permute(0,4,1,5,3,2,6)
