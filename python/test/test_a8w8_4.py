@@ -216,17 +216,17 @@ def gemm_a8w8_forward(out, a, b, alpha_row, alpha_col):
 def get_shapes():
     shapes = [
         # (40, 13312, 8896)
-         (i, 13312, 8896) for i in (1, 10, 20, 30, 40)] +\
-              [(i, 17792, 13312) for i in (1, 10, 20, 30, 40)] +\
-              [(i, 1920, 13312) for i in (1, 10, 20, 30, 40)] +\
-              [(i, 13312, 1664) for i in (1, 10, 20, 30, 40)
+        #  (i, 13312, 8896) for i in (1, 10, 20, 30, 40)] +\
+        #       [(i, 17792, 13312) for i in (1, 10, 20, 30, 40)] +\
+        #       [(i, 1920, 13312) for i in (1, 10, 20, 30, 40)] +\
+        #       [(i, 13312, 1664) for i in (1, 10, 20, 30, 40)
 
-        #    (i, 13312, 8896) for i in (1, 10, 20, 30, 40, 764, 1024, 2048, 4096)] +\
-        #     [(i, 17792, 13312) for i in (1, 10, 20, 30, 40, 764, 1024, 2048, 4096)] +\
-        #     [(i, 1920, 13312) for i in (1, 10, 20, 30, 40, 764, 1024, 2048, 4096)] +\
-        #     [(i, 13312, 1664) for i in (1, 10, 20, 30, 40, 764, 1024, 2048, 4096)] +\
-        #[(8192, 8192, 8192),
-        #(8192, 8192, 16384)
+           (i, 13312, 8896) for i in (1, 10, 20, 30, 40, 764, 1024, 2048, 4096)] +\
+            [(i, 17792, 13312) for i in (1, 10, 20, 30, 40, 764, 1024, 2048, 4096)] +\
+            [(i, 1920, 13312) for i in (1, 10, 20, 30, 40, 764, 1024, 2048, 4096)] +\
+            [(i, 13312, 1664) for i in (1, 10, 20, 30, 40, 764, 1024, 2048, 4096)] +\
+        [(8192, 8192, 8192),
+        (8192, 8192, 16384)
         ]
     return shapes
 
@@ -355,8 +355,8 @@ def benchmark(M, N, K, provider):
         print(f"M = {M}, N = {N}, K = {K}, type = {in_dtype}, best_config = {_triton_gemm_a8w8_kernel.best_config}")
         # print(f'A8W8 SIZE: {M},{N},{K} Best tuning config: ({_triton_gemm_a8w8_kernel.get_best_config()})')
         # print(f'A8W8 SIZE: {M},{N},{K} TIME: {ms:.3f} ms, {min_ms:.3f} min_ms, {max_ms:.3f} max_ms')
-    perf_us = lambda x: round(x * 1e3, 2)
-    # perf_us = lambda x: round(2 * M * N * K / x * 1e-9, 2)
+    # perf_us = lambda x: round(x * 1e3, 2)
+    perf_us = lambda x: round(2 * M * N * K / x * 1e-9, 2)
     return perf_us(ms), perf_us(min_ms), perf_us(max_ms)
  
  
