@@ -58,6 +58,13 @@ def _get_a8w8_configs():
         triton.Config({'BLOCK_M': 16, 'BLOCK_N': 64, 'BLOCK_K': 128, 'GROUP_SIZE_M': 1, 'matrix_instr_nonkdim': 16, 'kpack': 2}, num_stages=0, num_warps=2),
         triton.Config({'BLOCK_M': 32, 'BLOCK_N': 64, 'BLOCK_K': 128, 'GROUP_SIZE_M': 1, 'matrix_instr_nonkdim': 16, 'kpack': 2}, num_stages=0, num_warps=4),
         triton.Config({'BLOCK_M': 32, 'BLOCK_N': 64, 'BLOCK_K': 128, 'GROUP_SIZE_M': 1, 'matrix_instr_nonkdim': 16, 'kpack': 1}, num_stages=0, num_warps=4),
+
+        triton.Config({'BLOCK_M': 16, 'BLOCK_N': 32, 'BLOCK_K': 128, 'GROUP_SIZE_M': 1, 'matrix_instr_nonkdim': 16, 'kpack': 2}, num_stages=0, num_warps=2),
+        triton.Config({'BLOCK_M': 16, 'BLOCK_N': 32, 'BLOCK_K': 256, 'GROUP_SIZE_M': 1, 'matrix_instr_nonkdim': 16, 'kpack': 2}, num_stages=0, num_warps=2),
+        triton.Config({'BLOCK_M': 16, 'BLOCK_N': 32, 'BLOCK_K': 512, 'GROUP_SIZE_M': 1, 'matrix_instr_nonkdim': 16, 'kpack': 2}, num_stages=0, num_warps=2),
+        triton.Config({'BLOCK_M': 16, 'BLOCK_N': 32, 'BLOCK_K': 1024, 'GROUP_SIZE_M': 1, 'matrix_instr_nonkdim': 16, 'kpack': 2}, num_stages=0, num_warps=2),
+        triton.Config({'BLOCK_M': 16, 'BLOCK_N': 32, 'BLOCK_K': 2048, 'GROUP_SIZE_M': 1, 'matrix_instr_nonkdim': 16, 'kpack': 2}, num_stages=0, num_warps=2),
+
     ] if is_hip() else [
         triton.Config({'BLOCK_M': 128, 'BLOCK_N': 256, 'BLOCK_K': 64, 'GROUP_SIZE_M': 8}, num_stages=3, num_warps=8),
         triton.Config({'BLOCK_M': 64, 'BLOCK_N': 256, 'BLOCK_K': 32, 'GROUP_SIZE_M': 8}, num_stages=4, num_warps=4),
@@ -190,7 +197,7 @@ def gemm_a8w8_forward(out, a, b, alpha_row, alpha_col):
     # assert b.is_contiguous(), "Matrix B must be contiguous"
     assert out.dtype == torch.float16 or out.dtype == torch.bfloat16, "Output type must be float16 or bfloat16"
     assert out.dtype == alpha_row.dtype and out.dtype == alpha_col.dtype, "Output type must match scale type"
-    # assert a.shape[1] == b.shape[1], "Matrix B must be transposed"
+    assert a.shape[1] == b.shape[0], "Matrix A and B k-dim must match"
     M, K = a.shape
     K, N = b.shape
  
@@ -373,13 +380,13 @@ def benchmark(M, N, K, provider):
         )
     else: 
         assert 'triton' in provider
-        # out = torch.empty([a.shape[0], b.shape[1]], dtype=torch.half, device=a.device)
+        out = torch.empty([a.shape[0], b.shape[1]], dtype=torch.half, device=a.device)
         ms, min_ms, max_ms = triton.testing.do_bench_rotating_tensor(
             lambda i: gemm_a8w8_forward(out[i % tensor_num], a[i % tensor_num], b[i % tensor_num], alpha_row[i % tensor_num], alpha_col[i % tensor_num]), rep=100, quantiles=quantiles
         )
-        # ms, min_ms, max_ms = triton.testing.do_bench(
-        #     lambda: gemm_a8w8_forward(out[0], a[0], b[0], alpha_row[0], alpha_col[0]), rep=100, quantiles=quantiles
-        # )
+        ms, min_ms, max_ms = triton.testing.do_bench(
+            lambda: gemm_a8w8_forward(out[0], a[0], b[0], alpha_row[0], alpha_col[0]), rep=100, quantiles=quantiles
+        )
         print(f"M = {M}, N = {N}, K = {K}, type = {in_dtype}, best_config = {_triton_gemm_a8w8_kernel.best_config}")
         # print(f'A8W8 SIZE: {M},{N},{K} Best tuning config: ({_triton_gemm_a8w8_kernel.get_best_config()})')
         # print(f'A8W8 SIZE: {M},{N},{K} TIME: {ms:.3f} ms, {min_ms:.3f} min_ms, {max_ms:.3f} max_ms')
