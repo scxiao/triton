@@ -36,6 +36,24 @@ int getWmmaVersion(StringRef archGen) {
   return 0;
 }
 
+bool isChainDot(tt::DotOp &dotOp) {
+  auto filter = [&dotOp](Operation *op) {
+    return op->getParentRegion() == dotOp->getParentRegion();
+  };
+  ForwardSliceOptions fwdOpt;
+  fwdOpt.filter = filter;
+  BackwardSliceOptions bwdOpt;
+  bwdOpt.omitBlockArguments = true;
+  bwdOpt.filter = filter;
+  auto slices = getSlice(dotOp, bwdOpt, fwdOpt);
+  for (Operation *op : slices) {
+    if (isa<tt::DotOp>(op) && (op != dotOp))
+      return true;
+  }
+  return false;
+}
+
+
 SmallVector<unsigned, 2> warpsPerTile(tt::DotOp dotOp,
                                       const ArrayRef<int64_t> shape,
                                       int numWarps,
@@ -44,6 +62,15 @@ SmallVector<unsigned, 2> warpsPerTile(tt::DotOp dotOp,
   // Early exit for batched matmul
   if (rank == 3)
     return {(unsigned)numWarps, 1, 1};
+
+  if (isChainDot(dotOp)) {
+    if (shape[0] >= shape[1]) {
+      return {(unsigned)numWarps, 1};
+    }
+    else {
+      return {1, (unsigned)numWarps};
+    }
+  }
 
   auto filter = [&dotOp](Operation *op) {
     return op->getParentRegion() == dotOp->getParentRegion();
@@ -268,23 +295,6 @@ public:
   BlockedToMFMA(MLIRContext *context, int mfmaVersion, int nonKDim, int kPack)
       : RewritePattern(tt::DotOp::getOperationName(), 2, context),
         mfmaVersion(mfmaVersion), enforcedNonKDim(nonKDim), kPack(kPack) {}
-
-  bool isChainDot(tt::DotOp &dotOp) const {
-    auto filter = [&dotOp](Operation *op) {
-      return op->getParentRegion() == dotOp->getParentRegion();
-    };
-    ForwardSliceOptions fwdOpt;
-    fwdOpt.filter = filter;
-    BackwardSliceOptions bwdOpt;
-    bwdOpt.omitBlockArguments = true;
-    bwdOpt.filter = filter;
-    auto slices = getSlice(dotOp, bwdOpt, fwdOpt);
-    for (Operation *op : slices) {
-      if (isa<tt::DotOp>(op) && (op != dotOp))
-        return true;
-    }
-    return false;
-  }
 
   bool isSecondDot(tt::DotOp &dotOp) const {
     auto filter = [&dotOp](Operation *op) {
