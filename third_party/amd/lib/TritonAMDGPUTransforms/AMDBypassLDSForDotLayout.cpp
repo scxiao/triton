@@ -160,8 +160,9 @@ triton::LoadOp getLoadInst(Operation *op, ModuleOp &mod) {
   // from global memory (applicable for dot ops that don't depend on other dot
   // ops). This condition can be lifted if necessary.
   // assert(loadOpsVec.size() == 1);
-  //llvm::outs() << "number of loads in DF chain: " << loadOpsVec.size() << "\n";
-  return loadOpsVec[2];
+  // llvm::outs() << "number of loads in DF chain: " << loadOpsVec.size() <<
+  // "\n";
+  return loadOpsVec.back();
 }
 
 class BypassLDSForDotLayout : public mlir::RewritePattern {
@@ -217,9 +218,46 @@ public:
     auto shape = dstType.getShape();
     newOrder[0] = 1;
     newOrder[1] = 0;
+
+    const unsigned targetLoadBitWidth = 128;
+    const unsigned elemBitWidth =
+        srcType.getElementType().getIntOrFloatBitWidth();
+
     switch (shape[kDim]) {
+    case 1024:
+      newSizePerThread[0] = targetLoadBitWidth / elemBitWidth;
+      newSizePerThread[1] = 1;
+      newThreadsPerWarp[0] = 64;
+      newThreadsPerWarp[1] = 1;
+      newWarpsPerCTA[0] = 1;
+      newWarpsPerCTA[1] = numWarps;
+      newOrder[0] = 0;
+      newOrder[1] = 1;
+      break;
+    case 512:
+      newSizePerThread[0] = targetLoadBitWidth / elemBitWidth;
+      newSizePerThread[1] = 1;
+      newThreadsPerWarp[0] = shape[kDim] / newSizePerThread[0];
+      newThreadsPerWarp[1] = 64 / newThreadsPerWarp[0];
+      newWarpsPerCTA[0] = 1;
+      newWarpsPerCTA[1] = numWarps;
+      newOrder[0] = 0;
+      newOrder[1] = 1;
+      break;
+    case 256:
+      assert(elemBitWidth == 8 && "8 bit dtype should use BLOCK_K=256");
+      newSizePerThread[0] = targetLoadBitWidth / elemBitWidth;
+      newSizePerThread[1] = 1;
+      newThreadsPerWarp[0] = 16;
+      newThreadsPerWarp[1] = 4;
+      newWarpsPerCTA[0] = 1;
+      newWarpsPerCTA[1] = numWarps;
+      newOrder[0] = 0;
+      newOrder[1] = 1;
+      break;
     case 128:
-      newSizePerThread[0] = 8;
+      assert(elemBitWidth == 16 && "16 bit dtype should use BLOCK_K=128");
+      newSizePerThread[0] = targetLoadBitWidth / elemBitWidth;
       newSizePerThread[1] = 1;
       newThreadsPerWarp[0] = 16;
       newThreadsPerWarp[1] = 4;
@@ -231,7 +269,7 @@ public:
     case 64:
     case 32:
     case 16:
-      assert(false);
+      assert(false && "BLOCK_K must be 128 for fp16 and 256 for int8/fp8");
     default:
       return failure();
     }
@@ -245,6 +283,9 @@ public:
     auto loadType = dyn_cast<RankedTensorType>(loadInst.getResult().getType());
     if (!loadType || loadType.getEncoding() == newBlockedEncoding)
       return failure();
+
+    assert(loadType.getElementType().getIntOrFloatBitWidth() == elemBitWidth &&
+           "data type unexpectedly changing bitwidth between load and dot");
 
     convertLayout(newBlockedEncoding, (Operation *)loadInst);
     if (failed(mlir::verify(mod))) {
