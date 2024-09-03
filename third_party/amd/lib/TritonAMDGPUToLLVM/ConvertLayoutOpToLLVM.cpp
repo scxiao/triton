@@ -139,7 +139,9 @@ private:
     auto loc = op.getLoc();
     RankedTensorType srcTy = op.getSrc().getType();
     RankedTensorType dstTy = op.getType();
+    llvm::outs() << "beforeShortcutCheck\n";
     if (isMfmaToDotShortcut(srcTy, dstTy)) {
+      llvm::outs() << "insideShortcutCheck\n";
       // vecSize is an number of sequential elements stored by one thread
       // - For MFMA encoding (encoding of the result tensor of dot
       // operation) it is 4
