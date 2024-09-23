@@ -267,7 +267,9 @@ class LayerNorm(torch.autograd.Function):
         x, w, b, m, v = ctx.saved_tensors
         # heuristics for amount of parallel reduction stream for DW/DB
         N = w.shape[0]
-        tile_num = get_tile_num()
+        x_arg = x.reshape(-1, x.shape[-1])
+        M = x_arg.shape[0]
+        tile_num = min(256, M//4)
         # allocate output
         _dw = torch.zeros((tile_num, N), dtype=x.dtype, device=w.device)
         _db = torch.zeros((tile_num, N), dtype=x.dtype, device=w.device)
@@ -276,7 +278,6 @@ class LayerNorm(torch.autograd.Function):
         dx = torch.empty_like(dy)
         # enqueue kernel using forward pass heuristics
         # also compute partial sums for DW and DB
-        x_arg = x.reshape(-1, x.shape[-1])
         M, N = x_arg.shape
         grid1 = (tile_num,)
         _layer_norm_bwd_dx_fused[grid1](  #
