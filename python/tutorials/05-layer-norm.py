@@ -33,6 +33,7 @@ import torch
 
 import triton
 import triton.language as tl
+from triton.runtime import driver
 
 try:
     # This is https://github.com/NVIDIA/apex, NOT the apex on PyPi, so it
@@ -136,7 +137,6 @@ def _layer_norm_bwd_dx_fused(DX,  # pointer to the input gradient
                              W,  # pointer to the weights
                              Mean,  # pointer to the mean
                              Rstd,  # pointer to the 1/std
-                             Lock,  # pointer to the lock
                              stride,  # how much to increase the pointer when moving by 1 row
                              N,  # number of columns in X
                              NUM_ROWS: tl.constexpr, BLOCK_SIZE_N: tl.constexpr):
@@ -154,10 +154,6 @@ def _layer_norm_bwd_dx_fused(DX,  # pointer to the input gradient
         x_ptrs = X + row * stride
         dy_ptrs = DY + row * stride
         dx_ptrs = DX + row * stride
-        # Offset locks and weights/biases gradient pointer for parallel reduction
-        # lock_id = row % GROUP_SIZE_M
-        # Lock += lock_id
-        # Count = Lock + GROUP_SIZE_M
         dw_ptrs = DW + pid * N + cols
         db_ptrs = DB + pid * N + cols
         # Load data to SRAM
@@ -213,6 +209,14 @@ def _layer_norm_bwd_dwdb(DW,  # pointer to the partial sum of weights gradient
     tl.store(FINAL_DB + cols, sum_db, mask=cols < N)
 
 
+# function to get the number of SMs/CUs on the GPU
+def get_core_num():
+    device = torch.cuda.current_device()
+    properties = driver.active.utils.get_device_properties(device)
+    num = properties["multiprocessor_count"]
+    return num
+
+
 # %%
 # Benchmark
 # ---------
@@ -256,14 +260,10 @@ class LayerNorm(torch.autograd.Function):
         x, w, b, m, v = ctx.saved_tensors
         # heuristics for amount of parallel reduction stream for DW/DB
         N = w.shape[0]
-        GROUP_SIZE_M = 256
-        # if N <= 8192: GROUP_SIZE_M = 96
-        # if N <= 4096: GROUP_SIZE_M = 128
-        # if N <= 1024: GROUP_SIZE_M = 256
+        tile_num = get_core_num()
         # allocate output
-        locks = torch.zeros(2 * GROUP_SIZE_M, dtype=torch.int32, device=w.device)
-        _dw = torch.zeros((GROUP_SIZE_M, N), dtype=x.dtype, device=w.device)
-        _db = torch.zeros((GROUP_SIZE_M, N), dtype=x.dtype, device=w.device)
+        _dw = torch.zeros((tile_num, N), dtype=x.dtype, device=w.device)
+        _db = torch.zeros((tile_num, N), dtype=x.dtype, device=w.device)
         dw = torch.empty((N, ), dtype=w.dtype, device=w.device)
         db = torch.empty((N, ), dtype=w.dtype, device=w.device)
         dx = torch.empty_like(dy)
@@ -271,9 +271,9 @@ class LayerNorm(torch.autograd.Function):
         # also compute partial sums for DW and DB
         x_arg = x.reshape(-1, x.shape[-1])
         M, N = x_arg.shape
-        grid1 = (GROUP_SIZE_M,)
+        grid1 = (tile_num,)
         _layer_norm_bwd_dx_fused[grid1](  #
-            dx, dy, _dw, _db, x, w, m, v, locks,  #
+            dx, dy, _dw, _db, x, w, m, v,  #
             x_arg.stride(0), N,  #
             NUM_ROWS=M,  #
             BLOCK_SIZE_N=ctx.BLOCK_SIZE,  #
@@ -281,7 +281,7 @@ class LayerNorm(torch.autograd.Function):
         grid = lambda meta: [triton.cdiv(N, meta['BLOCK_SIZE_N'])]
         # accumulate partial sums in separate kernel
         _layer_norm_bwd_dwdb[grid](
-            _dw, _db, dw, db, min(GROUP_SIZE_M, M), N,  #
+            _dw, _db, dw, db, min(tile_num, M), N,  #
             BLOCK_SIZE_M=32,  #
             BLOCK_SIZE_N=128, num_ctas=1)
         return dx, None, dw, db, None
@@ -366,7 +366,7 @@ def bench_layer_norm(M, N, dtype, provider, mode='backward', eps=1e-5, device='c
     return gbps(ms), gbps(max_ms), gbps(min_ms)
 
 
-test_layer_norm(1151, 8192, torch.float16)
+# test_layer_norm(1151, 8192, torch.float16)
 bench_layer_norm.run(save_path='.', print_data=True)
 
 # %%
