@@ -43,6 +43,21 @@ try:
 except ModuleNotFoundError:
     HAS_APEX = False
 
+def is_hip():
+    return triton.runtime.driver.active.get_current_target().backend == "hip"
+
+
+# function to get the number of SMs/CUs on the GPU
+def get_core_num():
+    device = torch.cuda.current_device()
+    properties = driver.active.utils.get_device_properties(device)
+    num = properties["multiprocessor_count"]
+    return num
+
+
+def get_tile_num():
+    return get_core_num() if is_hip() else 256
+
 
 @triton.jit
 def _layer_norm_fwd_fused(
@@ -207,15 +222,7 @@ def _layer_norm_bwd_dwdb(DW,  # pointer to the partial sum of weights gradient
     sum_db = tl.sum(db, axis=0)
     tl.store(FINAL_DW + cols, sum_dw, mask=cols < N)
     tl.store(FINAL_DB + cols, sum_db, mask=cols < N)
-
-
-# function to get the number of SMs/CUs on the GPU
-def get_core_num():
-    device = torch.cuda.current_device()
-    properties = driver.active.utils.get_device_properties(device)
-    num = properties["multiprocessor_count"]
-    return num
-
+    
 
 # %%
 # Benchmark
@@ -260,7 +267,7 @@ class LayerNorm(torch.autograd.Function):
         x, w, b, m, v = ctx.saved_tensors
         # heuristics for amount of parallel reduction stream for DW/DB
         N = w.shape[0]
-        tile_num = get_core_num()
+        tile_num = get_tile_num()
         # allocate output
         _dw = torch.zeros((tile_num, N), dtype=x.dtype, device=w.device)
         _db = torch.zeros((tile_num, N), dtype=x.dtype, device=w.device)
