@@ -1593,17 +1593,19 @@ AMDMfmaEncodingAttr::getMFMAInstrShapeForOperands(int kWidth, int opIdx) const {
   assert((mDim == nDim) && (mDim == 32 || mDim == 16 || mDim == 4) ||
          (mDim == 64 && nDim == 4) || (mDim == 4 && nDim == 64));
   constexpr int warpSize = 64; // MFMA is always based on the 64-wide warps.
-  int kGroups = -1;
-  if (mDim == nDim)
-    kGroups = warpSize / mDim;
-  if (mDim == 64 && nDim == 4 || mDim == 4 && nDim == 64)
-    kGroups = 1;
+  // int kGroups = -1;
+  // if (mDim == nDim)
+  //   kGroups = warpSize / mDim;
+  // if (mDim == 64 && nDim == 4 || mDim == 4 && nDim == 64)
+  //   kGroups = 1;
+  auto nonKDim = opIdx == 0 ? mDim : nDim;
+  int kGroups = warpSize / nonKDim;
   int64_t kDim = kWidth * kGroups;
   if (opIdx == 0)
-    return {mDim, kDim};
+    return {nonKDim, kDim};
   else
     assert(opIdx == 1);
-  return {kDim, nDim};
+  return {kDim, nonKDim};
 }
 
 SmallVector<int64_t>
@@ -1638,10 +1640,15 @@ unsigned AMDMfmaEncodingAttr::getTotalElemsPerThreadForOperands(
 
 SmallVector<unsigned>
 AMDMfmaEncodingAttr::getSizePerThreadForOperands(unsigned opIdx) const {
+  unsigned kWidth = 4;
   if (opIdx == 0) {
-    return {4, 1};
+    // return {4, 1};
+    unsigned repeats = (getMDim() == 64 and getNDim() == 4) ? 16 : 1;
+    return {1, kWidth * repeats};
   } else if (opIdx == 1) {
-    return {1, 4};
+    // return {1, 4};
+    unsigned repeats = (getMDim() == 4 and getNDim() == 64) ? 16 : 1;
+    return {kWidth * repeats, 1};
   } else {
     llvm::report_fatal_error("DotOperandEncodingAttr opIdx must be 0 or 1");
     return {};

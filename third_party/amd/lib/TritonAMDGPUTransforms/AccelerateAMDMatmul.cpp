@@ -362,7 +362,7 @@ public:
       llvm::report_fatal_error("No match found in MFMA database\n");
 
     kDim = maybeMfmaInsn->getKDim();
-    unsigned kBase = maybeMfmaInsn->getKBase();
+    unsigned kBase = maybeMfmaInsn->getKBaseA();
 
     assert(kDim != 0);
 

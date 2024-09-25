@@ -36,7 +36,7 @@ using ::mlir::triton::gpu::AMDMfmaEncodingAttr;
 using ::mlir::triton::gpu::DotOperandEncodingAttr;
 using ::mlir::triton::gpu::SharedEncodingAttr;
 
-using ValueTable = std::map<std::array<int, 3>, Value>;
+using ValueTable = std::map<std::array<int, 3>, llvm::SmallVector<Value>>;
 
 struct DotOpMFMAConversionHelper {
   AMDMfmaEncodingAttr mfmaLayout;
@@ -60,14 +60,102 @@ struct DotOpMFMAConversionHelper {
     return rewriter.create<arith::TruncIOp>(loc, i32_ty, tid);
   }
 
+  Value broadcastGroup(Value val, int groupId, int numGroups) const {
+    constexpr int waveSize = 64;
+    const int groupSize = waveSize / numGroups;
+    Value lane = getThreadId();
+    // Multiply by 4 because permute requires offset in bytes
+    Value laneOffset = mul(urem(lane, i32_val(groupSize)), i32_val(4));
+    Value permuteAddr = add(laneOffset, i32_val(groupId * groupSize * 4));
+    Type valType = val.getType();
+    Value broadcasted;
+    if (valType.isInteger(32)) {
+      broadcasted = rewriter.create<ROCDL::DsBpermuteOp>(loc, val.getType(), permuteAddr, val);
+    }
+
+    if (valType.isF32()) {
+      val = bitcast(val, i32_ty);
+      broadcasted = rewriter.create<ROCDL::DsBpermuteOp>(loc, val.getType(),
+                                                         permuteAddr, val);
+      broadcasted = bitcast(broadcasted, f32_ty);
+    }
+    if (auto vecTy = mlir::dyn_cast<VectorType>(valType)) {
+      auto vecBitSize = vecTy.getElementType().getIntOrFloatBitWidth() *
+                        vecTy.getNumElements();
+      const int int32VecSize = vecBitSize / 32;
+
+      Type int32VecTy = vec_ty(i32_ty, int32VecSize);
+      Value int32Val = bitcast(val, int32VecTy);
+      Value int32Broadcasted = undef(int32VecTy);
+      for (int i = 0; i < int32VecSize; ++i) {
+        Value int32Chunk = extract_element(i32_ty, int32Val, i32_val(i));
+        Value broadcastedChunk = rewriter.create<ROCDL::DsBpermuteOp>(
+            loc, i32_ty, permuteAddr, int32Chunk);
+        int32Broadcasted = insert_element(int32VecTy, int32Broadcasted,
+                                          broadcastedChunk, i32_val(i));
+      }
+      broadcasted = bitcast(int32Broadcasted, valType);
+    }
+    assert(broadcasted);
+    return broadcasted;
+
+  }
+
   Value generateMFMAOp(StringRef mfmaInsnName, Value valA, Value valB,
-                       Value valC) const {
+                       Value valC, int cbsz = 0, int abid = 0, 
+                       int blgp = 0) const {
+    assert(cbsz >= 0 && cbsz <= 4);
+    assert(abid >= 0 && abid <= 15);
+    assert(blgp >= 0 && blgp <= 7);
     auto resType = valC.getType();
     Value zeroFlag = i32_val(0);
+    Value cbszFlag = cbsz != 0 ? i32_val(cbsz) : zeroFlag;
+    Value abidFlag = abid != 0 ? i32_val(abid) : zeroFlag;
+    Value blgpFlag = blgp != 0 ? i32_val(blgp) : zeroFlag;
     OperationState loweredOp(loc, mfmaInsnName);
     loweredOp.addTypes(resType);
-    loweredOp.addOperands({valA, valB, valC, zeroFlag, zeroFlag, zeroFlag});
+    loweredOp.addOperands({valA, valB, valC, cbszFlag, abidFlag, blgpFlag});
     return rewriter.create(loweredOp)->getResult(0);
+  }
+
+  Value generateMFMATile(StringRef mfmaInsnName, SmallVector<Value> valA,
+                         SmallVector<Value> valB, Value valC, int mDim,
+                         int nDim, bool transpose) const {
+    Value acc;
+    if (mDim == nDim) {
+      assert(valA.size() == 1 && valB.size() == 1);
+      acc = transpose ? generateMFMAOp(mfmaInsnName, valB[0], valA[0], valC)
+                      : generateMFMAOp(mfmaInsnName, valA[0], valB[0], valC);
+    }
+
+    if ((mDim == 4 and nDim == 64) or (mDim == 64 and nDim == 4)) {
+      constexpr int broadcastCtrl = 4;
+      constexpr int numRepeats = 16;
+      acc = valC;
+      for (int kRep = 0; kRep < numRepeats; ++kRep) {
+        if (mDim == 4 and (not transpose)) {
+          assert(valA.size() == 1 and valB.size() == 16);
+          acc = generateMFMAOp(mfmaInsnName, valA[0], valB[kRep], acc, broadcastCtrl, kRep);
+        }
+        if (mDim == 4 and transpose) {
+          assert(valA.size() == 1 and valB.size() == 16);
+          Value broadcastValA = broadcastGroup(valA[0], kRep, numRepeats);
+          acc = generateMFMAOp(mfmaInsnName, valB[kRep], broadcastValA, acc);
+        }
+        if (nDim == 4 && !transpose) {
+          assert(valA.size() == 16 && valB.size() == 1);
+          Value broadcastValB = broadcastGroup(valB[0], kRep, numRepeats);
+          acc = generateMFMAOp(mfmaInsnName, valA[kRep], broadcastValB, acc);
+        }
+        if (nDim == 4 && transpose) {
+          assert(valA.size() == 16 && valB.size() == 1);
+          acc = generateMFMAOp(mfmaInsnName, valB[0], valA[kRep], acc,
+                               broadcastCtrl, kRep);
+        }        
+      }
+    }
+
+    return acc;
   }
 
   int getNumSubmatrices(Type elementType, int mDim, int nDim) const {
@@ -187,17 +275,19 @@ struct DotOpMFMAConversionHelper {
       llvm::report_fatal_error("No match found in MFMA database\n");
 
     mfmaInsnName = maybeMfmaInsn->getInsnName();
-    unsigned kBase = maybeMfmaInsn->getKBase();
+    unsigned kBaseA = maybeMfmaInsn->getKBaseA();
+    unsigned kBaseB = maybeMfmaInsn->getKBaseB();
 
     auto aEncoding = cast<DotOperandEncodingAttr>(aTensorTy.getEncoding());
     auto bEncoding = cast<DotOperandEncodingAttr>(bTensorTy.getEncoding());
-    int kWidth = aEncoding.getKWidth();
+    int kWidthA = aEncoding.getKWidth();
+    int kWidthB = bEncoding.getKWidth();
     auto rank = aTensorTy.getShape().size();
 
     auto repA =
-        mfmaLayout.getMFMARepForOperands(aTensorTy.getShape(), kWidth, 0);
+        mfmaLayout.getMFMARepForOperands(aTensorTy.getShape(), kWidthA, 0);
     auto repB =
-        mfmaLayout.getMFMARepForOperands(bTensorTy.getShape(), kWidth, 1);
+        mfmaLayout.getMFMARepForOperands(bTensorTy.getShape(), kWidthB, 1);
 
     assert(repA[2] == repB[1]);
 
@@ -212,10 +302,10 @@ struct DotOpMFMAConversionHelper {
     assert(repA[0] == repB[0]);
 
     auto operandA = getValuesFromDotOperandLayoutStruct(
-        loadedA, numRepB, numRepM, numRepK, kWidth, kBase,
+        loadedA, numRepB, numRepM, numRepK, kWidthA, kBaseA,
         aTensorTy.getElementType());
     auto operandB = getValuesFromDotOperandLayoutStruct(
-        loadedB, numRepB, numRepN, numRepK, kWidth, kBase,
+        loadedB, numRepB, numRepN, numRepK, kWidthB, kBaseB,
         aTensorTy.getElementType());
 
     auto dstElemTy = dTensorTy.getElementType();
@@ -242,13 +332,13 @@ struct DotOpMFMAConversionHelper {
           }
           acc = zeroAuxiliarBlocks(subBlocks, acc);
           for (int k = 0; k < numRepK; k++) {
-            for (int kPack = 0; kPack < kWidth / kBase; ++kPack)
-              acc =
-                  mfmaLayout.getIsTransposed()
-                      ? generateMFMAOp(mfmaInsnName, operandB[kPack][{b, n, k}],
-                                       operandA[kPack][{b, m, k}], acc)
-                      : generateMFMAOp(mfmaInsnName, operandA[kPack][{b, m, k}],
-                                       operandB[kPack][{b, n, k}], acc);
+            for (int kPack = 0; kPack < kWidthA / kBaseA; ++kPack)
+              acc = generateMFMATile(mfmaInsnName, operandA[kPack][{b, m, k}], operandB[kPack][{b, n, k}], acc, mDim, nDim, mfmaLayout.getIsTransposed());
+                  // mfmaLayout.getIsTransposed()
+                  //     ? generateMFMAOp(mfmaInsnName, operandB[kPack][{b, n, k}],
+                  //                      operandA[kPack][{b, m, k}], acc)
+                  //     : generateMFMAOp(mfmaInsnName, operandA[kPack][{b, m, k}],
+                  //                      operandB[kPack][{b, n, k}], acc);
           }
           acc = reduceSubBlocks(subBlocks, acc);
           for (unsigned v = 0; v < elemsPerVec; ++v) {
@@ -273,32 +363,43 @@ struct DotOpMFMAConversionHelper {
    * rawElems is a vector of kWidth elements. We need to prepare vector(s) of
    * kBase elements for each mfma instruction
    */
-  SmallVector<Value> extractOperands(Value rawElems, int kWidth, int kBase,
+  SmallVector<SmallVector<Value>> extractOperands(Value rawElems, int kWidth, int kBase,
                                      Type type) const {
     int kpack = kWidth / kBase;
-    SmallVector<Value> results;
-    auto vecTy = vec_ty(type, kBase);
+    bool wideOperand = kWidth >= 16;
+    int numIntrinsics = wideOperand ? 16 : 1;
+    auto rawTy = mlir::cast<VectorType>(rawElems.getType());
+    int intrinsicK = rawTy.getNumElements() / numIntrinsics / kpack;
+
+    SmallVector<SmallVector<Value>> results;
+    auto vecTy = vec_ty(type, intrinsicK);
     if (type.isBF16())
-      vecTy = vec_ty(i16_ty, kBase);
+      vecTy = vec_ty(i16_ty, intrinsicK);
     for (int k = 0; k < kpack; ++k) {
+      SmallVector<Value> resPack;
       Value vec = undef(vecTy);
-      for (int elemId = 0; elemId < kBase; ++elemId) {
-        auto val = extract_element(type, rawElems, i32_val(elemId + k * kBase));
-        if (type.isBF16()) {
-          // rocdl.mfma.f32.32x32x8bf16.1k calls for input of i16 type
-          auto cast = bitcast(val, i16_ty);
-          vec = insert_element(vecTy, vec, cast, i32_val(elemId));
-        } else
-          vec = insert_element(vecTy, vec, val, i32_val(elemId));
+      for (int intrinsic = 0; intrinsic < numIntrinsics; ++intrinsic) {
+        for (int elemId = 0; elemId < intrinsicK; ++elemId) {
+          int elemOff = elemId + intrinsic * intrinsicK + k * kBase;
+          auto val = extract_element(type, rawElems, i32_val(elemId + k * kBase));
+          if (type.isBF16()) {
+            // rocdl.mfma.f32.32x32x8bf16.1k calls for input of i16 type
+            auto cast = bitcast(val, i16_ty);
+            vec = insert_element(vecTy, vec, cast, i32_val(elemId));
+          } else
+            vec = insert_element(vecTy, vec, val, i32_val(elemId));
+        }
+        if (type.getIntOrFloatBitWidth() == 8) {
+          if (4 == kBase)
+            // This is for int8 on pre- MI300 GPUs
+            resPack.push_back(bitcast(vec, i32_ty));
+          if (8 == kBase)
+            resPack.push_back(bitcast(vec, i64_ty));
+        } else {
+          resPack.push_back(vec);
+        }
       }
-      if (type.getIntOrFloatBitWidth() == 8) {
-        if (4 == kBase)
-          // This is for int8 on pre- MI300 GPUs
-          results.push_back(bitcast(vec, i32_ty));
-        if (8 == kBase)
-          results.push_back(bitcast(vec, i64_ty));
-      } else
-        results.push_back(vec);
+      results.push_back(resPack);
     }
     return results;
   }
@@ -330,9 +431,9 @@ struct DotOpMFMAConversionHelper {
           if (type.isF32()) {
             for (int k = 0; k < kpack; ++k)
               dotOpVals[k][{b, i, j}] =
-                  extract_element(type, rawElems, i32_val(k));
+                  {extract_element(type, rawElems, i32_val(k))};
           } else {
-            SmallVector<Value> vals;
+            SmallVector<SmallVector<Value>> vals;
             if (type.getIntOrFloatBitWidth() == 8) {
               vals = extractOperands(rawElems, kWidth, kBase, i8_ty);
             } else if (type.isBF16()) {
