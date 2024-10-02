@@ -1404,6 +1404,7 @@ inline SmallVector<Value> unpackLLElements(Location loc, Value llvmStruct,
     return {llvmStruct};
   ArrayRef<Type> types =
       cast<LLVM::LLVMStructType>(llvmStruct.getType()).getBody();
+  llvm::outs() << "types_size = " << types.size() << "\n";
   SmallVector<Value> results(types.size());
   for (unsigned i = 0; i < types.size(); ++i) {
     Type type = types[i];

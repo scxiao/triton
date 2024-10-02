@@ -218,6 +218,9 @@ auto getMfmaInsnGroupAttrMap = []() -> const MfmaInsnGroupMap & {
 FailureOr<MfmaInsn> MfmaInsn::selectMfma(unsigned mDim, unsigned nDim,
                                          Type elementTypeA, Type elementTypeB,
                                          int mfmaVersion) {
+
+  llvm::outs() << "mDim = " << mDim << ", nDim = " << nDim << ", elemTypeA = " << elementTypeA << "\n";
+
   auto mfmaInsnAttrMap = getMfmaInsnGroupAttrMap();
   MfmaInsnGroupSelectKey key = {
       mDim, nDim, convertTypesToId(elementTypeA, elementTypeB), mfmaVersion};

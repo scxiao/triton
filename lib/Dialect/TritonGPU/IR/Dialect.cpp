@@ -1334,7 +1334,8 @@ AMDMfmaEncodingAttr::verify(function_ref<mlir::InFlightDiagnostic()> emitError,
   if (versionMinor != 0) {
     return emitError() << "minor version must be 0";
   }
-  if (!((mDim == 32 && nDim == 32) || (mDim == 16 && nDim == 16))) {
+  if (!((mDim == 32 && nDim == 32) || (mDim == 16 && nDim == 16) ||
+        (mDim == 4 && nDim == 64) || (mDim == 64 && nDim == 4))) {
     return emitError()
            << "(M, N) cases other than (32, 32) or (16, 16) unimplemented";
   }
@@ -1548,10 +1549,17 @@ SmallVector<unsigned> AMDMfmaEncodingAttr::getThreadsPerWarp() const {
   if (getMDim() == 32) {
     cols = 2;
     rows = 32;
-  } else {
-    assert(getMDim() == 16);
+  } else if (getMDim() == 16) {
     cols = 4;
     rows = 16;
+  } else {
+    if (getMDim() == 4) {
+      cols = 1;
+      rows = 64;
+    } else {
+      cols = 64;
+      rows = 1;
+    }
   }
   if (getIsTransposed()) {
     res[rank - 1] = cols;
@@ -1571,6 +1579,9 @@ SmallVector<unsigned> AMDMfmaEncodingAttr::getSizePerThread() const {
     rows = 16;
     cols = 1;
   } else if (getMDim() == 16) {
+    rows = 4;
+    cols = 1;
+  } else if (getMDim() == 4 || getMDim() == 64) {
     rows = 4;
     cols = 1;
   } else
@@ -1593,19 +1604,14 @@ AMDMfmaEncodingAttr::getMFMAInstrShapeForOperands(int kWidth, int opIdx) const {
   assert((mDim == nDim) && (mDim == 32 || mDim == 16 || mDim == 4) ||
          (mDim == 64 && nDim == 4) || (mDim == 4 && nDim == 64));
   constexpr int warpSize = 64; // MFMA is always based on the 64-wide warps.
-  // int kGroups = -1;
-  // if (mDim == nDim)
-  //   kGroups = warpSize / mDim;
-  // if (mDim == 64 && nDim == 4 || mDim == 4 && nDim == 64)
-  //   kGroups = 1;
   auto nonKDim = opIdx == 0 ? mDim : nDim;
   int kGroups = warpSize / nonKDim;
   int64_t kDim = kWidth * kGroups;
   if (opIdx == 0)
-    return {nonKDim, kDim};
+    return {mDim, kDim};
   else
     assert(opIdx == 1);
-  return {kDim, nonKDim};
+  return {kDim, nDim};
 }
 
 SmallVector<int64_t>
@@ -1641,14 +1647,15 @@ unsigned AMDMfmaEncodingAttr::getTotalElemsPerThreadForOperands(
 SmallVector<unsigned>
 AMDMfmaEncodingAttr::getSizePerThreadForOperands(unsigned opIdx) const {
   unsigned kWidth = 4;
+  llvm::outs() << "----------------kWidth = " << kWidth << "\n";
   if (opIdx == 0) {
     // return {4, 1};
     unsigned repeats = (getMDim() == 64 and getNDim() == 4) ? 16 : 1;
-    return {1, kWidth * repeats};
+    return {kWidth * repeats, 1};
   } else if (opIdx == 1) {
     // return {1, 4};
     unsigned repeats = (getMDim() == 4 and getNDim() == 64) ? 16 : 1;
-    return {kWidth * repeats, 1};
+    return {1, kWidth * repeats};
   } else {
     llvm::report_fatal_error("DotOperandEncodingAttr opIdx must be 0 or 1");
     return {};
@@ -2313,8 +2320,8 @@ struct TritonGPUInferLayoutInterface
     // Verify that the encodings are valid.
     if (!aEncoding || !bEncoding)
       return op->emitError("mismatching encoding between A and B operands");
-    if (aEncoding.getKWidth() != bEncoding.getKWidth())
-      return op->emitError("mismatching kWidth between A and B operands");
+    // if (aEncoding.getKWidth() != bEncoding.getKWidth())
+    //   return op->emitError("mismatching kWidth between A and B operands");
     return success();
   }
 

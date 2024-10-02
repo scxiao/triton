@@ -262,6 +262,7 @@ struct DotOpMFMAConversionHelper {
     Value a = op.getA();
     Value b = op.getB();
     Value d = op.getD();
+    llvm::outs() << "d = " << d << "\n";
     auto aTensorTy = cast<RankedTensorType>(a.getType());
     auto bTensorTy = cast<RankedTensorType>(b.getType());
     auto dTensorTy = cast<RankedTensorType>(d.getType());
@@ -283,11 +284,11 @@ struct DotOpMFMAConversionHelper {
     int kWidthA = aEncoding.getKWidth();
     int kWidthB = bEncoding.getKWidth();
     auto rank = aTensorTy.getShape().size();
-
     auto repA =
         mfmaLayout.getMFMARepForOperands(aTensorTy.getShape(), kWidthA, 0);
     auto repB =
         mfmaLayout.getMFMARepForOperands(bTensorTy.getShape(), kWidthB, 1);
+    llvm::outs() << "repA[2] = " << repA[2] << ", repB[1] = " << repB[1] << "\n";
 
     assert(repA[2] == repB[1]);
 
@@ -309,7 +310,9 @@ struct DotOpMFMAConversionHelper {
         aTensorTy.getElementType());
 
     auto dstElemTy = dTensorTy.getElementType();
+    llvm::outs() << "loadedC = " << loadedC << "\n";
     auto fc = unpackLLElements(loc, loadedC, rewriter);
+    llvm::outs() << "fc_size = " << fc.size() << "\n";
 
     unsigned warpSize = triton::gpu::getWarpSize(mfmaLayout);
     // compute number of output elements that each thread holds for one MFMA
@@ -319,6 +322,7 @@ struct DotOpMFMAConversionHelper {
     auto elemsPerVec = mDim * nDim * subBlocks / warpSize;
 
     auto vecTy = vec_ty(dstElemTy, elemsPerVec);
+    llvm::outs() << "numRepM = " << numRepM << ", numRepN = " << numRepN << "\n";
     for (int b = 0; b < numRepB; ++b) {
       for (int m = 0; m < numRepM; ++m) {
         for (int n = 0; n < numRepN; ++n) {
@@ -331,14 +335,16 @@ struct DotOpMFMAConversionHelper {
                 i32_val(v));
           }
           acc = zeroAuxiliarBlocks(subBlocks, acc);
+
           for (int k = 0; k < numRepK; k++) {
-            for (int kPack = 0; kPack < kWidthA / kBaseA; ++kPack)
+            for (int kPack = 0; kPack < kWidthA / kBaseA; ++kPack) {
               acc = generateMFMATile(mfmaInsnName, operandA[kPack][{b, m, k}], operandB[kPack][{b, n, k}], acc, mDim, nDim, mfmaLayout.getIsTransposed());
                   // mfmaLayout.getIsTransposed()
                   //     ? generateMFMAOp(mfmaInsnName, operandB[kPack][{b, n, k}],
                   //                      operandA[kPack][{b, m, k}], acc)
                   //     : generateMFMAOp(mfmaInsnName, operandA[kPack][{b, m, k}],
                   //                      operandB[kPack][{b, n, k}], acc);
+            }
           }
           acc = reduceSubBlocks(subBlocks, acc);
           for (unsigned v = 0; v < elemsPerVec; ++v) {
@@ -349,11 +355,15 @@ struct DotOpMFMAConversionHelper {
         }
       }
     }
+    llvm::outs() << "convertDot1\n";
     // replace with new packed result
     Type structTy = LLVM::LLVMStructType::getLiteral(
         ctx, SmallVector<Type>(fc.size(), dstElemTy));
+    llvm::outs() << "convertDot2, fc_size = " << fc.size() << ", strucTy = " << structTy << "\n";
     Value res = packLLElements(loc, typeConverter, fc, rewriter, structTy);
+    llvm::outs() << "convertDot3\n";
     rewriter.replaceOp(op, res);
+    llvm::outs() << "convertDot4\n";
 
     return success();
   }
@@ -365,11 +375,15 @@ struct DotOpMFMAConversionHelper {
    */
   SmallVector<SmallVector<Value>> extractOperands(Value rawElems, int kWidth, int kBase,
                                      Type type) const {
+    llvm::outs() << "kWidth = " << kWidth << ", kBase = " << kBase << "\n";
     int kpack = kWidth / kBase;
     bool wideOperand = kWidth >= 16;
     int numIntrinsics = wideOperand ? 16 : 1;
     auto rawTy = mlir::cast<VectorType>(rawElems.getType());
     int intrinsicK = rawTy.getNumElements() / numIntrinsics / kpack;
+    llvm::outs() << "elemNum = " << rawTy.getNumElements() << ", numIntrinsics = " << numIntrinsics << ", kpack = " << kpack << "\n";
+
+    llvm::outs() << "intrinsicK = " << intrinsicK << "\n";
 
     SmallVector<SmallVector<Value>> results;
     auto vecTy = vec_ty(type, intrinsicK);
@@ -390,14 +404,15 @@ struct DotOpMFMAConversionHelper {
             vec = insert_element(vecTy, vec, val, i32_val(elemId));
         }
         if (type.getIntOrFloatBitWidth() == 8) {
-          if (4 == kBase)
+          if (4 == kBase / numIntrinsics)
             // This is for int8 on pre- MI300 GPUs
             resPack.push_back(bitcast(vec, i32_ty));
-          if (8 == kBase)
+          if (8 == kBase / numIntrinsics)
             resPack.push_back(bitcast(vec, i64_ty));
         } else {
           resPack.push_back(vec);
         }
+        llvm::outs() << "result_size = " << resPack.size() << "\n";
       }
       results.push_back(resPack);
     }

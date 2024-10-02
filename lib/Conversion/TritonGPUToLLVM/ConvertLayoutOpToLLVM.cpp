@@ -247,6 +247,7 @@ struct ConvertLayoutOpUsingLinearLayoutsConversion
   LogicalResult
   matchAndRewrite(ConvertLayoutOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+    llvm::outs() << "op = " << op << "\n";
     MLIRContext *ctx = op.getContext();
 
     const auto &shape = op.getType().getShape();

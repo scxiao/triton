@@ -307,9 +307,9 @@ public:
 
   /// @brief Choose MFMA instruction parameters
   /// @param dot target dot operation
-  /// @return pair {mDim, nDim, kDim, kBase} sizes of one MFMA instruction
+  /// @return pair {mDim, nDim, kDim, kBaseA, kBaseB} sizes of one MFMA instruction
   /// arguments
-  std::tuple<unsigned, unsigned, unsigned, unsigned>
+  std::tuple<unsigned, unsigned, unsigned, unsigned, unsigned>
   chooseMfmaDimensions(tt::DotOp dot) const {
     // number of matrix elements along k dim per one MFMA intruction
     unsigned kDim = 0;
@@ -327,8 +327,20 @@ public:
     unsigned mDim = 0;
     unsigned nDim = 0;
     if (enforcedNonKDim != 0) {
-      mDim = enforcedNonKDim;
-      nDim = enforcedNonKDim;
+      if (enforcedNonKDim == 32 || enforcedNonKDim == 16 ||
+          enforcedNonKDim == 4) {
+        mDim = enforcedNonKDim;
+        nDim = enforcedNonKDim;
+      } else if (enforcedNonKDim == 464) {
+        mDim = 4;
+        nDim = 64;
+      } else if (enforcedNonKDim == 644) {
+        mDim = 64;
+        nDim = 4;
+      } else {
+        llvm::report_fatal_error("Invalid MFMA nonKDim option, supported "
+                                 "values are: 32, 16, 4, 464, 644");
+      }
     } else {
       int minSize = std::min(M, N);
       if (minSize >= 32) {
@@ -362,13 +374,14 @@ public:
       llvm::report_fatal_error("No match found in MFMA database\n");
 
     kDim = maybeMfmaInsn->getKDim();
-    unsigned kBase = maybeMfmaInsn->getKBaseA();
+    unsigned kBaseA = maybeMfmaInsn->getKBaseA();
+    unsigned kBaseB = maybeMfmaInsn->getKBaseB();
 
     assert(kDim != 0);
 
     assert(M % mDim == 0 && N % nDim == 0);
     assert(opType.getShape()[rank - 1] % kDim == 0);
-    return {mDim, nDim, kDim, kBase};
+    return {mDim, nDim, kDim, kBaseA, kBaseB};
   }
 
   LogicalResult matchAndRewrite(Operation *op,
@@ -399,7 +412,7 @@ public:
 
     ttg::AMDMfmaEncodingAttr mfmaEnc;
 
-    auto [mDim, nDim, kDim, kBase] = chooseMfmaDimensions(dotOp);
+    auto [mDim, nDim, kDim, kBaseA, kBaseB] = chooseMfmaDimensions(dotOp);
 
     auto warpsPerTile =
         warpsPerTileMFMA(dotOp, retShape, numWarps, {mDim, nDim});
@@ -446,26 +459,32 @@ public:
     //        can only consume kBase elements from each thread.
     //    Note that we cannot have larger kPack since kPack = 2 means
     //    ds_read_b128, which is the largest vector size for shared memory load.
-    auto kWidth = kBase;
-    // in mfma 4x4 case argument matrix groups in 16 groups
-    if (mDim == 4 && nDim == 4)
-      kWidth = kDim / 16;
-    if ((mDim == 4 && nDim == 64) || (mDim == 64 && nDim == 4))
-      kWidth = kDim;
+    auto kWidthA = kBaseA;
+    auto kWidthB = kBaseB;
+    // // in mfma 4x4 case argument matrix groups in 16 groups
+    // if (mDim == 4 && nDim == 4)5
+    //   kWidth = kDim / 16;
+    // if ((mDim == 4 && nDim == 64) || (mDim == 64 && nDim == 4)) {
+    //   kWidth = kDim;
+    // }
+
+    llvm::outs() <<"kWidthA = " << kWidthA << ", kWidthB = " << kWidthB << "\n";
 
     // We want to extend kWidth by kPack (kPack=1 means no extension)
     // to increase ds_read vector size
     // However, in FA, the second dot can only use kWidth = kBase since it's
     // limited by the result of the first dot, which is of mfmaLayout.
-    if (!isSecondDot(dotOp))
-      kWidth *= kPack;
+    if (!isSecondDot(dotOp)) {
+      kWidthA *= kPack;
+      kWidthB *= kPack;
+    }
 
     auto newAType = RankedTensorType::get(
         oldAType.getShape(), oldAType.getElementType(),
-        ttg::DotOperandEncodingAttr::get(ctx, 0, mfmaEnc, kWidth));
+        ttg::DotOperandEncodingAttr::get(ctx, 0, mfmaEnc, kWidthA));
     auto newBType = RankedTensorType::get(
         oldBType.getShape(), oldBType.getElementType(),
-        ttg::DotOperandEncodingAttr::get(ctx, 1, mfmaEnc, kWidth));
+        ttg::DotOperandEncodingAttr::get(ctx, 1, mfmaEnc, kWidthB));
     a = rewriter.create<ttg::ConvertLayoutOp>(a.getLoc(), newAType, a);
     b = rewriter.create<ttg::ConvertLayoutOp>(b.getLoc(), newBType, b);
     auto newDot = rewriter.create<tt::DotOp>(

@@ -446,7 +446,9 @@ LinearLayout mfmaToLinearLayout(ArrayRef<int64_t> shape,
          "Unsupported tensor shape for given mfma layout");
 
   assert(((mfma.getMDim() == 32 && mfma.getNDim() == 32) ||
-          (mfma.getMDim() == 16 && mfma.getNDim() == 16)) &&
+          (mfma.getMDim() == 16 && mfma.getNDim() == 16) ||
+          (mfma.getMDim() == 4 && mfma.getNDim() == 64) ||
+          (mfma.getMDim() == 64 && mfma.getNDim() == 4)) &&
          "Unsupported mfma type");
 
   MLIRContext *ctx = mfma.getContext();
@@ -477,8 +479,8 @@ LinearLayout mfmaToLinearLayout(ArrayRef<int64_t> shape,
         {{kRegister, {{0, 1}, {0, 2}, {0, 8}, /*gap*/ {0, 16}}},
          {kLane, {{1, 0}, {2, 0}, {4, 0}, {8, 0}, {16, 0}, /*gap*/ {0, 4}}}},
         {outDimNames[order[0]], outDimNames[order[1]]});
-  } else {
-    assert(mfma.getMDim() == 16);
+    llvm::outs() << "mfma32Layout = " << tileLayout << "\n";
+  } else if (mfma.getMDim() == 16 and mfma.getNDim() == 16) {
     // For mfma with 16x16 output, each of the 64 threads holds 4 elements.
     //
     // For the register (i.e., element) dimension, these 4 elements are along
@@ -491,7 +493,19 @@ LinearLayout mfmaToLinearLayout(ArrayRef<int64_t> shape,
         {{kRegister, {{0, 1}, {0, 2}}},
          {kLane, {{1, 0}, {2, 0}, {4, 0}, {8, 0}, /*gap*/ {0, 4}, {0, 8}}}},
         {outDimNames[order[0]], outDimNames[order[1]]});
+    llvm::outs() << "mfma32Layout = " << tileLayout << "\n";
+  } else if (mfma.getMDim() == 4 and mfma.getNDim() == 64) {
+    tileLayout = LinearLayout(
+        {{kRegister, {{0, 1}, {0, 2}}},
+         {kLane, {{1, 0}, {2, 0}, {4, 0}, {8, 0}, {16, 0}, {32, 0}}}},
+        {outDimNames[order[0]], outDimNames[order[1]]});
+    llvm::outs() << "mfma464Layout = " << tileLayout << "\n";
+  } else if (mfma.getMDim() == 64 and mfma.getNDim() == 4) {
+    llvm::report_fatal_error("Unimplemented");
+  } else {
+    llvm::report_fatal_error("Unsupported mfma mfma layout in function mfmaToLinearLayout");
   }
+
   if (hasBatchDim) {
     assert(order[2] == 0);
     // Extend the base vector with one value to accomodate for the batch
