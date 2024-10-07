@@ -243,6 +243,7 @@ emitIndices(Location loc, RewriterBase &rewriter, const TargetInfoBase &target,
                                      {kLane, laneId},
                                      {kWarp, warpId},
                                      {kBlock, blockId}});
+  llvm::outs() << "RegisterDimSize = " << ll->getInDimSize(str_attr("register")) << "\n";
   for (unsigned reg = 0; reg < ll->getInDimSize(str_attr("register")); reg++) {
     auto idxsReg =
         ll->apply({{kRegister, reg}, {kLane, 0}, {kWarp, 0}, {kBlock, 0}});
@@ -282,6 +283,7 @@ bool emitTransferBetweenRegistersAndShared(
 
   std::optional<LinearLayout> regLayout =
       triton::gpu::toLinearLayout(shape, registerTy.getEncoding());
+
   std::optional<LinearLayout> sharedLayout = triton::gpu::toLinearLayout(
       shape, sharedTy.getEncoding(), elemLlvmTy.getIntOrFloatBitWidth());
   if (!regLayout.has_value() || !sharedLayout.has_value()) {
@@ -440,6 +442,7 @@ SmallVector<SmallVector<unsigned>> emitOffsetForLayout(Attribute layout,
   StringAttr kBlock = str_attr("block");
 
   SmallVector<SmallVector<unsigned>> offsets;
+  llvm::outs() << "emitOffsetForLayout, InDimSize = " << ll->getInDimSize(str_attr("register")) << "\n";
   for (int i = 0; i < ll->getInDimSize(str_attr("register")); i++) {
     auto idxs =
         ll->apply({{kRegister, i}, {kLane, 0}, {kWarp, 0}, {kBlock, 0}});
@@ -450,6 +453,7 @@ SmallVector<SmallVector<unsigned>> emitOffsetForLayout(Attribute layout,
     offsets.push_back(
         llvm::to_vector_of<unsigned>(llvm::make_second_range(idxs)));
   }
+
   return offsets;
 }
 

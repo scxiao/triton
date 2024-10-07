@@ -14,6 +14,8 @@
 
 #include "triton/Conversion/TritonGPUToLLVM/PatternTritonGPUOpToLLVM.h"
 
+#include <csignal>
+
 namespace {
 
 using ::mlir::isLayoutMmaV1;
@@ -247,7 +249,7 @@ struct ConvertLayoutOpUsingLinearLayoutsConversion
   LogicalResult
   matchAndRewrite(ConvertLayoutOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    llvm::outs() << "op = " << op << "\n";
+    llvm::outs() << "**********convertOp = " << op << "\n";
     MLIRContext *ctx = op.getContext();
 
     const auto &shape = op.getType().getShape();
@@ -284,6 +286,8 @@ struct ConvertLayoutOpUsingLinearLayoutsConversion
     StringAttr kWarp = str_attr("warp");
     StringAttr kBlock = str_attr("block");
 
+    llvm::outs() << "convertLayout1\n";
+
     // TODO(jlebar): These checks are overly-restrictive.  For example, we can
     // transfer by shuffling registers (case 1) if and only if all of the bases
     // for `register` have 0s for lane, warp, and block.  But the check below is
@@ -298,6 +302,8 @@ struct ConvertLayoutOpUsingLinearLayoutsConversion
       return transferWithinThread(*c, op, adaptor, rewriter);
     }
 
+    llvm::outs() << "convertLayout1\n";
+
     if (std::optional<LinearLayout> c = conversion.divideRight(
             LinearLayout::identity1D(numWarps, kWarp, kWarp) *
             LinearLayout::identity1D(numBlocks, kBlock, kBlock));
@@ -305,8 +311,15 @@ struct ConvertLayoutOpUsingLinearLayoutsConversion
       return transferWithinLane(*c, op, adaptor, rewriter);
     }
 
-    return transferWithinBlockOrGroup(conversion, op, *srcLayout, *dstLayout,
+    llvm::outs() << "convertLayout2\n";
+    auto result = transferWithinBlockOrGroup(conversion, op, *srcLayout, *dstLayout,
                                       adaptor, rewriter);
+    llvm::outs() << "convertLayout3\n";
+
+    return result;
+
+    // return transferWithinBlockOrGroup(conversion, op, *srcLayout, *dstLayout,
+    //                                   adaptor, rewriter);
   }
 
   LogicalResult

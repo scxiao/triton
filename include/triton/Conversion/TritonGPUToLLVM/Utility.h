@@ -2,6 +2,7 @@
 #define TRITON_CONVERSION_TRITONGPU_TO_LLVM_UTILITY_H
 
 #include <set>
+#include <iostream>
 
 #include "mlir/Conversion/LLVMCommon/Pattern.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
@@ -1417,6 +1418,7 @@ inline Value packLLElements(Location loc,
                             const LLVMTypeConverter *typeConverter,
                             ValueRange resultVals, RewriterBase &rewriter,
                             Type type) {
+  llvm::outs() << "packElements = " << resultVals << ", type = " << type << "\n";
   if (isMoeLDSBypass()) {
     auto firstType = resultVals[0].getType();
     bool sameTypes = true;

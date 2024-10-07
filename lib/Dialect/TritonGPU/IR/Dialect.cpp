@@ -766,23 +766,24 @@ AMDMfmaEncodingAttr::getElemsPerThread(ArrayRef<int64_t> shape,
   assert((rank == 2 || rank == 3) && "Unexpected rank of mfma layout");
 
   SmallVector<unsigned> elemsPerThread(rank);
-  auto nonKDim = getMDim();
-  auto elemsPerThreadPerTile = (nonKDim == 16 ? 4 : 16);
+  auto mDim = getMDim();
+  auto nDim = getNDim();
+  auto elemsPerThreadPerTile = (mDim == 32 ? 16 : 4);
   if (rank == 3)
     elemsPerThread[0] = ceil<unsigned>(shape[0], getWarpsPerCTA()[0]);
   if (getIsTransposed()) {
     unsigned elemsCol =
-        ceil<unsigned>(shape[rank - 1], nonKDim * getWarpsPerCTA()[rank - 1]) *
+        ceil<unsigned>(shape[rank - 1], nDim * getWarpsPerCTA()[rank - 1]) *
         elemsPerThreadPerTile;
     unsigned elemsRow =
-        ceil<unsigned>(shape[rank - 2], nonKDim * getWarpsPerCTA()[rank - 2]);
+        ceil<unsigned>(shape[rank - 2], mDim * getWarpsPerCTA()[rank - 2]);
     elemsPerThread[rank - 2] = elemsRow;
     elemsPerThread[rank - 1] = elemsCol;
   } else {
     unsigned elemsCol =
-        ceil<unsigned>(shape[rank - 1], nonKDim * getWarpsPerCTA()[rank - 1]);
+        ceil<unsigned>(shape[rank - 1], nDim * getWarpsPerCTA()[rank - 1]);
     unsigned elemsRow =
-        ceil<unsigned>(shape[rank - 2], nonKDim * getWarpsPerCTA()[rank - 2]) *
+        ceil<unsigned>(shape[rank - 2], mDim * getWarpsPerCTA()[rank - 2]) *
         elemsPerThreadPerTile;
     elemsPerThread[rank - 2] = elemsRow;
     elemsPerThread[rank - 1] = elemsCol;

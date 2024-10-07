@@ -263,6 +263,9 @@ struct DotOpMFMAConversionHelper {
     Value b = op.getB();
     Value d = op.getD();
     llvm::outs() << "d = " << d << "\n";
+    Value loadedC1 = adaptor.getC();
+    llvm::outs() << "loadedC1 = " << loadedC1 << "\n";
+
     auto aTensorTy = cast<RankedTensorType>(a.getType());
     auto bTensorTy = cast<RankedTensorType>(b.getType());
     auto dTensorTy = cast<RankedTensorType>(d.getType());
@@ -288,13 +291,12 @@ struct DotOpMFMAConversionHelper {
         mfmaLayout.getMFMARepForOperands(aTensorTy.getShape(), kWidthA, 0);
     auto repB =
         mfmaLayout.getMFMARepForOperands(bTensorTy.getShape(), kWidthB, 1);
-    llvm::outs() << "repA[2] = " << repA[2] << ", repB[1] = " << repB[1] << "\n";
-
     assert(repA[2] == repB[1]);
 
     Value loadedA = adaptor.getA();
     Value loadedB = adaptor.getB();
     Value loadedC = adaptor.getC();
+    llvm::outs() << "loadedC2 = " << loadedC << "\n";
 
     auto numRepM = repA[1];
     auto numRepN = repB[2];
@@ -310,7 +312,6 @@ struct DotOpMFMAConversionHelper {
         aTensorTy.getElementType());
 
     auto dstElemTy = dTensorTy.getElementType();
-    llvm::outs() << "loadedC = " << loadedC << "\n";
     auto fc = unpackLLElements(loc, loadedC, rewriter);
     llvm::outs() << "fc_size = " << fc.size() << "\n";
 
@@ -355,15 +356,11 @@ struct DotOpMFMAConversionHelper {
         }
       }
     }
-    llvm::outs() << "convertDot1\n";
     // replace with new packed result
     Type structTy = LLVM::LLVMStructType::getLiteral(
         ctx, SmallVector<Type>(fc.size(), dstElemTy));
-    llvm::outs() << "convertDot2, fc_size = " << fc.size() << ", strucTy = " << structTy << "\n";
     Value res = packLLElements(loc, typeConverter, fc, rewriter, structTy);
-    llvm::outs() << "convertDot3\n";
     rewriter.replaceOp(op, res);
-    llvm::outs() << "convertDot4\n";
 
     return success();
   }
@@ -377,13 +374,11 @@ struct DotOpMFMAConversionHelper {
                                      Type type) const {
     llvm::outs() << "kWidth = " << kWidth << ", kBase = " << kBase << "\n";
     int kpack = kWidth / kBase;
-    bool wideOperand = kWidth >= 16;
+    bool wideOperand = kWidth > 32;
     int numIntrinsics = wideOperand ? 16 : 1;
     auto rawTy = mlir::cast<VectorType>(rawElems.getType());
     int intrinsicK = rawTy.getNumElements() / numIntrinsics / kpack;
-    llvm::outs() << "elemNum = " << rawTy.getNumElements() << ", numIntrinsics = " << numIntrinsics << ", kpack = " << kpack << "\n";
-
-    llvm::outs() << "intrinsicK = " << intrinsicK << "\n";
+    llvm::outs() << "elemNum = " << rawTy.getNumElements() << ", numIntrinsics = " << numIntrinsics << ", kpack = " << kpack << ", intrinsicK = " << intrinsicK << "\n";
 
     SmallVector<SmallVector<Value>> results;
     auto vecTy = vec_ty(type, intrinsicK);
@@ -412,7 +407,6 @@ struct DotOpMFMAConversionHelper {
         } else {
           resPack.push_back(vec);
         }
-        llvm::outs() << "result_size = " << resPack.size() << "\n";
       }
       results.push_back(resPack);
     }

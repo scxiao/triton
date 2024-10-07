@@ -423,6 +423,8 @@ public:
         /*versionMajor*/ mfmaVersion, /*versionMinor*/ 0, warpsPerTile,
         /*instrShape*/ mDim, nDim, isTransposed, CTALayout);
 
+    llvm::outs() << "mfmaEnc = " << mfmaEnc << "\n";
+
     Type mfmaAccType;
     if (oldRetType.getElementType().isIntOrIndex())
       mfmaAccType = rewriter.getIntegerType(32);
@@ -432,6 +434,8 @@ public:
     // convert accumulator
     auto oldAcc = dotOp.getOperand(2);
     auto newAcc = convertAndCastTensor(rewriter, oldAcc, mfmaEnc, mfmaAccType);
+
+    llvm::outs() << "oldAccType = " << oldAcc.getType() << ", newAccType = " << newAcc.getType() << "\n";
 
     // Here is a brief explanation of kWidth, kBase, and kDim
     // 1. kWidth: the number of elements each thread loads from shared memory in
@@ -462,13 +466,11 @@ public:
     auto kWidthA = kBaseA;
     auto kWidthB = kBaseB;
     // // in mfma 4x4 case argument matrix groups in 16 groups
-    // if (mDim == 4 && nDim == 4)5
+    // if (mDim == 4 && nDim == 4)
     //   kWidth = kDim / 16;
     // if ((mDim == 4 && nDim == 64) || (mDim == 64 && nDim == 4)) {
     //   kWidth = kDim;
     // }
-
-    llvm::outs() <<"kWidthA = " << kWidthA << ", kWidthB = " << kWidthB << "\n";
 
     // We want to extend kWidth by kPack (kPack=1 means no extension)
     // to increase ds_read vector size
@@ -478,6 +480,8 @@ public:
       kWidthA *= kPack;
       kWidthB *= kPack;
     }
+
+    llvm::outs() <<"kWidthA = " << kWidthA << ", kWidthB = " << kWidthB << "\n";
 
     auto newAType = RankedTensorType::get(
         oldAType.getShape(), oldAType.getElementType(),
@@ -496,6 +500,7 @@ public:
                              oldRetType.getElementType());
 
     rewriter.replaceOp(op, dotOutput);
+    llvm::outs() << "dotOutputs = " << dotOutput << "\n";
 
     return success();
   }
