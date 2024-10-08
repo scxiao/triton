@@ -494,6 +494,7 @@ LinearLayout mfmaToLinearLayout(ArrayRef<int64_t> shape,
          {kLane, {{1, 0}, {2, 0}, {4, 0}, {8, 0}, /*gap*/ {0, 4}, {0, 8}}}},
         {outDimNames[order[0]], outDimNames[order[1]]});
   } else if (mfma.getMDim() == 4 and mfma.getNDim() == 64) {
+    assert(order[0] == rank - 1);
     tileLayout = LinearLayout(
         {{kRegister, {{0, 1}, {0, 2}}},
          {kLane, {{1, 0}, {2, 0}, {4, 0}, {8, 0}, {16, 0}, {32, 0}}}},
@@ -501,7 +502,12 @@ LinearLayout mfmaToLinearLayout(ArrayRef<int64_t> shape,
         {outDimNames[order[0]], outDimNames[order[1]]});
     llvm::outs() << "mfma464Layout = " << tileLayout << "\n";
   } else if (mfma.getMDim() == 64 and mfma.getNDim() == 4) {
-    llvm::report_fatal_error("Unimplemented");
+    assert(order[0] == rank - 1);
+    tileLayout = LinearLayout(
+      {{kRegister, {{0, 1}, {0, 2}}},
+       {kLane, {{1, 0}, {2, 0}, {0, 4}, {0, 8}, {0, 16}, {0, 32}}}},
+      {outDimNames[order[0]], outDimNames[order[1]]});
+    llvm::outs() << "mfma644Layout = " << tileLayout << "\n";   
   } else {
     llvm::report_fatal_error("Unsupported mfma mfma layout in function mfmaToLinearLayout");
   }

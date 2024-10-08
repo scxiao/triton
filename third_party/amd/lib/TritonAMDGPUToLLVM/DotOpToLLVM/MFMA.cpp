@@ -262,9 +262,7 @@ struct DotOpMFMAConversionHelper {
     Value a = op.getA();
     Value b = op.getB();
     Value d = op.getD();
-    llvm::outs() << "d = " << d << "\n";
     Value loadedC1 = adaptor.getC();
-    llvm::outs() << "loadedC1 = " << loadedC1 << "\n";
 
     auto aTensorTy = cast<RankedTensorType>(a.getType());
     auto bTensorTy = cast<RankedTensorType>(b.getType());
@@ -296,7 +294,6 @@ struct DotOpMFMAConversionHelper {
     Value loadedA = adaptor.getA();
     Value loadedB = adaptor.getB();
     Value loadedC = adaptor.getC();
-    llvm::outs() << "loadedC2 = " << loadedC << "\n";
 
     auto numRepM = repA[1];
     auto numRepN = repB[2];
@@ -313,7 +310,6 @@ struct DotOpMFMAConversionHelper {
 
     auto dstElemTy = dTensorTy.getElementType();
     auto fc = unpackLLElements(loc, loadedC, rewriter);
-    llvm::outs() << "fc_size = " << fc.size() << "\n";
 
     unsigned warpSize = triton::gpu::getWarpSize(mfmaLayout);
     // compute number of output elements that each thread holds for one MFMA
@@ -323,7 +319,6 @@ struct DotOpMFMAConversionHelper {
     auto elemsPerVec = mDim * nDim * subBlocks / warpSize;
 
     auto vecTy = vec_ty(dstElemTy, elemsPerVec);
-    llvm::outs() << "numRepM = " << numRepM << ", numRepN = " << numRepN << "\n";
     for (int b = 0; b < numRepB; ++b) {
       for (int m = 0; m < numRepM; ++m) {
         for (int n = 0; n < numRepN; ++n) {
@@ -372,25 +367,23 @@ struct DotOpMFMAConversionHelper {
    */
   SmallVector<SmallVector<Value>> extractOperands(Value rawElems, int kWidth, int kBase,
                                      Type type) const {
-    llvm::outs() << "kWidth = " << kWidth << ", kBase = " << kBase << "\n";
-    int kpack = kWidth / kBase;
+    int kPack = kWidth / kBase;
     bool wideOperand = kWidth > 32;
     int numIntrinsics = wideOperand ? 16 : 1;
     auto rawTy = mlir::cast<VectorType>(rawElems.getType());
-    int intrinsicK = rawTy.getNumElements() / numIntrinsics / kpack;
-    llvm::outs() << "elemNum = " << rawTy.getNumElements() << ", numIntrinsics = " << numIntrinsics << ", kpack = " << kpack << ", intrinsicK = " << intrinsicK << "\n";
+    int intrinsicK = kBase / numIntrinsics;
 
     SmallVector<SmallVector<Value>> results;
     auto vecTy = vec_ty(type, intrinsicK);
     if (type.isBF16())
       vecTy = vec_ty(i16_ty, intrinsicK);
-    for (int k = 0; k < kpack; ++k) {
+    for (int k = 0; k < kPack; ++k) {
       SmallVector<Value> resPack;
       Value vec = undef(vecTy);
       for (int intrinsic = 0; intrinsic < numIntrinsics; ++intrinsic) {
         for (int elemId = 0; elemId < intrinsicK; ++elemId) {
-          int elemOff = elemId + intrinsic * intrinsicK + k * kBase;
-          auto val = extract_element(type, rawElems, i32_val(elemId + k * kBase));
+          int elemOff = elemId + intrinsic * intrinsicK * kPack + k * intrinsicK;
+          auto val = extract_element(type, rawElems, i32_val(elemOff));
           if (type.isBF16()) {
             // rocdl.mfma.f32.32x32x8bf16.1k calls for input of i16 type
             auto cast = bitcast(val, i16_ty);
