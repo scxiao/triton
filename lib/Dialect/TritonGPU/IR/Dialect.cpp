@@ -1648,7 +1648,6 @@ unsigned AMDMfmaEncodingAttr::getTotalElemsPerThreadForOperands(
 SmallVector<unsigned>
 AMDMfmaEncodingAttr::getSizePerThreadForOperands(unsigned opIdx) const {
   unsigned kWidth = 4;
-  llvm::outs() << "----------------kWidth = " << kWidth << "\n";
   if (opIdx == 0) {
     // return {4, 1};
     unsigned repeats = (getMDim() == 64 and getNDim() == 4) ? 16 : 1;

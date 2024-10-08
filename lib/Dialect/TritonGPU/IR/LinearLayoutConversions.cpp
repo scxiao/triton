@@ -435,7 +435,6 @@ LinearLayout mfmaToLinearLayout(ArrayRef<int64_t> shape,
                                 AMDMfmaEncodingAttr mfma) {
   int rank = shape.size();
   assert(rank == mfma.getWarpsPerCTA().size());
-  llvm::outs() << "shape[0] = " << shape[0] << ", shape[1] = " << shape[1] << "\n";
 
   bool hasBatchDim = rank == 3;
   int mIndex = 0 + hasBatchDim;
@@ -500,14 +499,12 @@ LinearLayout mfmaToLinearLayout(ArrayRef<int64_t> shape,
          {kLane, {{1, 0}, {2, 0}, {4, 0}, {8, 0}, {16, 0}, {32, 0}}}},
         //  {kLane, {{1, 0}, {2, 0}}}},
         {outDimNames[order[0]], outDimNames[order[1]]});
-    llvm::outs() << "mfma464Layout = " << tileLayout << "\n";
   } else if (mfma.getMDim() == 64 and mfma.getNDim() == 4) {
     assert(order[0] == rank - 1);
     tileLayout = LinearLayout(
       {{kRegister, {{0, 1}, {0, 2}}},
        {kLane, {{1, 0}, {2, 0}, {0, 4}, {0, 8}, {0, 16}, {0, 32}}}},
       {outDimNames[order[0]], outDimNames[order[1]]});
-    llvm::outs() << "mfma644Layout = " << tileLayout << "\n";   
   } else {
     llvm::report_fatal_error("Unsupported mfma mfma layout in function mfmaToLinearLayout");
   }
@@ -597,7 +594,6 @@ LinearLayout sliceToLinearLayout(ArrayRef<int64_t> shape,
 
   // First compute the linear layout for this layout's parent.
   SmallVector<int64_t> parentShape(shape);
-  llvm::outs() << "sliceGetDim = " << slice.getDim() << "\n";
   parentShape.insert(parentShape.begin() + slice.getDim(), 1);
   std::optional<LinearLayout> parentLL =
       triton::gpu::toLinearLayout(parentShape, slice.getParent());
@@ -801,7 +797,6 @@ toLinearLayout(ArrayRef<int64_t> shape, Attribute layout,
     }
   }
   if (auto slice = dyn_cast<SliceEncodingAttr>(layout)) {
-    llvm::outs() << "convertSliceLayout\n";
     return sliceToLinearLayout(shape, slice);
   }
   if (auto shared = dyn_cast<SharedEncodingAttr>(layout)) {

@@ -239,20 +239,14 @@ struct ExpandDimsOpConversion : public ConvertOpToLLVMPattern<ExpandDimsOp> {
     auto srcVals = unpackLLElements(loc, adaptor.getSrc(), rewriter);
     auto srcTy = cast<RankedTensorType>(op.getSrc().getType());
     auto resultTy = cast<RankedTensorType>(op.getType());
-    llvm::outs() << "op = " << op << "\n";
-    llvm::outs() << "srcTy = " << srcTy << ", resultTy = " << resultTy << "\n";
     auto srcLayout = dyn_cast<SliceEncodingAttr>(srcTy.getEncoding());
     if (!srcLayout) {
       return emitOptionalError(
           loc, "ExpandDimsOp only supports SliceEncodingAttr as its input");
     }
     auto resultLayout = resultTy.getEncoding();
-    llvm::outs() << "srcLayout = " << srcLayout << "\n";
-    llvm::outs() << "resultLayout = " << resultLayout << "\n";
     auto srcOffsets = emitOffsetForLayout(srcLayout, srcTy);
-    llvm::outs() << "srcOffsetsSize = " << srcOffsets.size() << "\n";
     auto resultOffsets = emitOffsetForLayout(resultLayout, resultTy);
-    llvm::outs() << "resultOffsetSize = " << resultOffsets.size() << "\n";
     std::map<SmallVector<unsigned>, Value> srcValues;
     for (size_t i = 0; i < srcOffsets.size(); i++) {
       srcValues[srcOffsets[i]] = srcVals[i];

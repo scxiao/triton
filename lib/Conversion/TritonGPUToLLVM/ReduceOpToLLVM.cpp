@@ -148,8 +148,6 @@ private:
     SmallVector<SmallVector<unsigned>> offsets =
         emitOffsetForLayout(helper.getSrcLayout(), operandType);
 
-    llvm::outs() << "emitOffsetForLayout1111\n";
-
     // Thread X might hold the same input value in two registers.  Get the
     // indices in `offsets` that hold unique values, and only accumualte over
     // those.
@@ -223,8 +221,6 @@ private:
         unsigned resultElems = getTotalElemsPerThread(resultTy);
         SmallVector<SmallVector<unsigned>> resultOffset =
             emitOffsetForLayout(resultLayout, resultTy);
-
-    llvm::outs() << "emitOffsetForLayout222\n";
 
         SmallVector<Value> resultVals;
         for (int j = 0; j < resultElems; j++) {

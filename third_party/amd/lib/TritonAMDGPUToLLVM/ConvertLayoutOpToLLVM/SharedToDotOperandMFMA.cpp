@@ -215,7 +215,6 @@ Value convertLayout(int opIdx, ConversionPatternRewriter &rewriter,
 
   auto elemTy = aTensorTy.getElementType();
   auto kWidth = encoding.getKWidth();
-  llvm::outs() << "kWidth = " << kWidth << ", opIdx = " << opIdx << "\n";
   auto elemsPerInstr = mfmaLayout.getMFMAInstrShapeForOperands(kWidth, opIdx);
 
   int64_t mfmaInstrNonK;
@@ -256,7 +255,6 @@ Value convertLayout(int opIdx, ConversionPatternRewriter &rewriter,
   int numSubBlocks = 1;
   if ((mfmaInstrK == 4 || mfmaInstrK == 1) && mfmaInstrNonK == 4)
     numSubBlocks = 16;
-  llvm::outs() << "mfmaInstrNonK = " << mfmaInstrNonK << ", mfmaInstrK = " << mfmaInstrK << ", numSubBlocks = " << numSubBlocks << "\n";
   assert(numSubBlocks == 1 &&
          "after reworking layout, there should be no redundency");    
   // numOfElemsPerThreadPerMfmaInstr

@@ -423,8 +423,6 @@ public:
         /*versionMajor*/ mfmaVersion, /*versionMinor*/ 0, warpsPerTile,
         /*instrShape*/ mDim, nDim, isTransposed, CTALayout);
 
-    llvm::outs() << "mfmaEnc = " << mfmaEnc << "\n";
-
     Type mfmaAccType;
     if (oldRetType.getElementType().isIntOrIndex())
       mfmaAccType = rewriter.getIntegerType(32);
@@ -434,8 +432,6 @@ public:
     // convert accumulator
     auto oldAcc = dotOp.getOperand(2);
     auto newAcc = convertAndCastTensor(rewriter, oldAcc, mfmaEnc, mfmaAccType);
-
-    llvm::outs() << "oldAccType = " << oldAcc.getType() << ", newAccType = " << newAcc.getType() << "\n";
 
     // Here is a brief explanation of kWidth, kBase, and kDim
     // 1. kWidth: the number of elements each thread loads from shared memory in
@@ -481,8 +477,6 @@ public:
       kWidthB *= kPack;
     }
 
-    llvm::outs() <<"kWidthA = " << kWidthA << ", kWidthB = " << kWidthB << "\n";
-
     auto newAType = RankedTensorType::get(
         oldAType.getShape(), oldAType.getElementType(),
         ttg::DotOperandEncodingAttr::get(ctx, 0, mfmaEnc, kWidthA));
@@ -500,7 +494,6 @@ public:
                              oldRetType.getElementType());
 
     rewriter.replaceOp(op, dotOutput);
-    llvm::outs() << "dotOutputs = " << dotOutput << "\n";
 
     return success();
   }
