@@ -256,7 +256,7 @@ Value convertLayout(int opIdx, ConversionPatternRewriter &rewriter,
   if ((mfmaInstrK == 4 || mfmaInstrK == 1) && mfmaInstrNonK == 4)
     numSubBlocks = 16;
   assert(numSubBlocks == 1 &&
-         "after reworking layout, there should be no redundency");    
+         "after reworking layout, there should be no redundency");
   // numOfElemsPerThreadPerMfmaInstr
   int numOfElems = mfmaInstrNonK * mfmaInstrK * numSubBlocks / iWarpSize;
 

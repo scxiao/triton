@@ -502,11 +502,12 @@ LinearLayout mfmaToLinearLayout(ArrayRef<int64_t> shape,
   } else if (mfma.getMDim() == 64 and mfma.getNDim() == 4) {
     assert(order[0] == rank - 1);
     tileLayout = LinearLayout(
-      {{kRegister, {{0, 1}, {0, 2}}},
-       {kLane, {{1, 0}, {2, 0}, {0, 4}, {0, 8}, {0, 16}, {0, 32}}}},
-      {outDimNames[order[0]], outDimNames[order[1]]});
+        {{kRegister, {{0, 1}, {0, 2}}},
+         {kLane, {{1, 0}, {2, 0}, {0, 4}, {0, 8}, {0, 16}, {0, 32}}}},
+        {outDimNames[order[0]], outDimNames[order[1]]});
   } else {
-    llvm::report_fatal_error("Unsupported mfma mfma layout in function mfmaToLinearLayout");
+    llvm::report_fatal_error(
+        "Unsupported mfma mfma layout in function mfmaToLinearLayout");
   }
 
   if (hasBatchDim) {
