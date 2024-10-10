@@ -1,6 +1,7 @@
 #include "triton/Dialect/Triton/IR/Dialect.h"
 
 #include <numeric>
+#include <iostream>
 
 #include "mlir/IR/DialectImplementation.h"
 #include "mlir/IR/OpImplementation.h"
@@ -48,6 +49,7 @@ namespace gpu {
 
 unsigned getTotalElemsPerThread(Attribute layout, ArrayRef<int64_t> shape,
                                 Type eltTy) {
+  llvm::outs() << "totalElemsPerThread, layout = " << layout << "\n";
   if (auto tritonGPUAttr = mlir::dyn_cast<TritonGPU_AttrTrait>(layout)) {
     return tritonGPUAttr.getTotalElemsPerThread(shape, eltTy);
   } else {
@@ -75,6 +77,7 @@ SmallVector<unsigned> getElemsPerThread(Type type) {
 }
 
 unsigned getTotalElemsPerThread(Type type) {
+  llvm::outs() << "getTotalElemsPerThread, type = " << type << "\n";
   if (type.isIntOrIndexOrFloat() || isa<triton::PointerType>(type))
     return 1;
   auto tensorType = cast<RankedTensorType>(type);
@@ -769,6 +772,7 @@ AMDMfmaEncodingAttr::getElemsPerThread(ArrayRef<int64_t> shape,
   auto mDim = getMDim();
   auto nDim = getNDim();
   auto elemsPerThreadPerTile = (mDim == 32 ? 16 : 4);
+
   if (rank == 3)
     elemsPerThread[0] = ceil<unsigned>(shape[0], getWarpsPerCTA()[0]);
   if (getIsTransposed()) {
@@ -935,11 +939,15 @@ DotOperandEncodingAttr::getElemsPerThread(ArrayRef<int64_t> shape,
 
 unsigned DotOperandEncodingAttr::getTotalElemsPerThread(ArrayRef<int64_t> shape,
                                                         Type eltTy) const {
+  llvm::outs() << "dotOpEncoding1\n";
   if (auto mmaParent = mlir::dyn_cast<MmaEncodingTrait>(getParent())) {
+  llvm::outs() << "dotOpEncoding2\n";
     return mmaParent.getTotalElemsPerThreadForOperands(shape, eltTy,
                                                        getKWidth(), getOpIdx());
   }
+  llvm::outs() << "dotOpEncoding3\n";
   if (auto blockedLayout = mlir::dyn_cast<BlockedEncodingAttr>(getParent())) {
+  llvm::outs() << "dotOpEncoding4\n";
     auto shapePerCTA = getShapePerCTA(*this, shape);
     auto shapePerCTATile = ::getShapePerCTATile(blockedLayout);
     auto order = blockedLayout.getOrder();
@@ -1630,6 +1638,9 @@ AMDMfmaEncodingAttr::getMFMARepForOperands(ArrayRef<int64_t> operandShape,
                                  (operandTileShape[0] * warpsPerCTA[rank - 2])),
         std::max<int64_t>(1, operandShape[rank - 1] / operandTileShape[1])};
   else {
+    llvm::outs() << "shape0 = " << operandShape[rank - 2] << ", shape1 = " << operandShape[rank - 1] << "\n";
+    llvm::outs() << "tileshape0 = " << operandTileShape[0] << ", tileshape1 = " << operandTileShape[1] << "\n";
+    llvm::outs() << "warpsPerCTA0 = " << warpsPerCTA[rank - 2] << ", warpsPerCTA1 = " << warpsPerCTA[rank - 1] << "\n";
     assert(opIdx == 1);
     return {
         numRepBatch,
@@ -1665,7 +1676,7 @@ AMDMfmaEncodingAttr::getSizePerThreadForOperands(unsigned opIdx) const {
 SmallVector<unsigned>
 AMDMfmaEncodingAttr::getShapePerCTATileForDotOperands(ArrayRef<int64_t> shape,
                                                       int opIdx) const {
-  assert(getMDim() == 32 || getMDim() == 16);
+  assert(getMDim() == 64 || getMDim() == 32 || getMDim() == 16 ||  getMDim() == 4);
   auto parentShapePerCTATile = getShapePerCTATile(shape);
   auto rank = parentShapePerCTATile.size();
   if (opIdx == 0) {

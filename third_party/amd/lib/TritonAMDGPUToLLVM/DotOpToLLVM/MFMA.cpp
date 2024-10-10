@@ -376,6 +376,11 @@ struct DotOpMFMAConversionHelper {
     auto rawTy = mlir::cast<VectorType>(rawElems.getType());
     int intrinsicK = kBase / numIntrinsics;
 
+    // llvm::outs() << "elemNum = " << rawTy.getNumElements()
+    //              << ", numIntrinsics = " << numIntrinsics
+    //              << ", kPack = " << kPack 
+    //              << ", kBase = " << kBase << "\n";
+
     SmallVector<SmallVector<Value>> results;
     auto vecTy = vec_ty(type, intrinsicK);
     if (type.isBF16())

@@ -122,12 +122,14 @@ public:
     Value dst = op.getResult();
     auto srcTy = cast<RankedTensorType>(src.getType());
     auto dstTy = cast<RankedTensorType>(dst.getType());
+    llvm::outs() << "srcTy = " << srcTy << ", dstTy = " << dstTy << "\n";
     Attribute srcLayout = srcTy.getEncoding();
     Attribute dstLayout = dstTy.getEncoding();
 
     if (isMoeLDSBypass() && !cvtNeedsSharedMemory(srcTy, dstTy)) {
       auto srcElems = triton::gpu::getTotalElemsPerThread(srcTy);
       auto dstElems = triton::gpu::getTotalElemsPerThread(dstTy);
+      llvm::outs() << "srcElems = " << srcElems << ", dstElems = " << dstElems << "\n";
       if (srcElems != dstElems) {
         llvm::errs() << "incompatible layout conversion: " << op << "\n";
       }

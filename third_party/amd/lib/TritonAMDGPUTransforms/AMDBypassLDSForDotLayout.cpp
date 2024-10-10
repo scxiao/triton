@@ -197,6 +197,15 @@ public:
       return mlir::failure();
     }
 
+    // get the dotOp parent encoding
+    auto mfmaLayout = mlir::dyn_cast<mlir::triton::gpu::AMDMfmaEncodingAttr>(dstDotOp.getParent());
+    if (!mfmaLayout) {
+      return mlir::failure();
+    }
+    auto mDim = mfmaLayout.getMDim();
+    auto nDim = mfmaLayout.getNDim();
+    llvm::outs() << "mDim = " << mDim << ", nDim = " << nDim << "\n";
+
     int kDim = dstDotOp.getOpIdx() == 0 ? 1 : 0;
     int nonKDim = dstDotOp.getOpIdx() == 0 ? 0 : 1;
 
@@ -223,55 +232,66 @@ public:
     const unsigned elemBitWidth =
         srcType.getElementType().getIntOrFloatBitWidth();
 
-    switch (shape[kDim]) {
-    case 1024:
-      newSizePerThread[0] = targetLoadBitWidth / elemBitWidth;
-      newSizePerThread[1] = 1;
-      newThreadsPerWarp[0] = 64;
-      newThreadsPerWarp[1] = 1;
-      newWarpsPerCTA[0] = 1;
-      newWarpsPerCTA[1] = numWarps;
-      newOrder[0] = 0;
-      newOrder[1] = 1;
-      break;
-    case 512:
-      newSizePerThread[0] = targetLoadBitWidth / elemBitWidth;
-      newSizePerThread[1] = 1;
-      newThreadsPerWarp[0] = shape[kDim] / newSizePerThread[0];
-      newThreadsPerWarp[1] = 64 / newThreadsPerWarp[0];
-      newWarpsPerCTA[0] = 1;
-      newWarpsPerCTA[1] = numWarps;
-      newOrder[0] = 0;
-      newOrder[1] = 1;
-      break;
-    case 256:
-      assert(elemBitWidth == 8 && "8 bit dtype should use BLOCK_K=256");
-      newSizePerThread[0] = targetLoadBitWidth / elemBitWidth;
-      newSizePerThread[1] = 1;
-      newThreadsPerWarp[0] = 16;
-      newThreadsPerWarp[1] = 4;
-      newWarpsPerCTA[0] = 1;
-      newWarpsPerCTA[1] = numWarps;
-      newOrder[0] = 0;
-      newOrder[1] = 1;
-      break;
-    case 128:
-      assert(elemBitWidth == 16 && "16 bit dtype should use BLOCK_K=128");
-      newSizePerThread[0] = targetLoadBitWidth / elemBitWidth;
-      newSizePerThread[1] = 1;
-      newThreadsPerWarp[0] = 16;
-      newThreadsPerWarp[1] = 4;
-      newWarpsPerCTA[0] = 1;
-      newWarpsPerCTA[1] = numWarps;
-      newOrder[0] = 0;
-      newOrder[1] = 1;
-      break;
-    case 64:
-    case 32:
-    case 16:
-      assert(false && "BLOCK_K must be 128 for fp16 and 256 for int8/fp8");
-    default:
-      return failure();
+    if (mDim == 4 and nDim == 64) {
+        newSizePerThread[0] = 8;
+        newSizePerThread[1] = 1;
+        newThreadsPerWarp[0] = 1;
+        newThreadsPerWarp[1] = 64;
+        newWarpsPerCTA[0] = numWarps;
+        newWarpsPerCTA[1] = 1;
+        newOrder[0] = 0;
+        newOrder[1] = 1;
+    } else {
+      switch (shape[kDim]) {
+      case 1024:
+        newSizePerThread[0] = targetLoadBitWidth / elemBitWidth;
+        newSizePerThread[1] = 1;
+        newThreadsPerWarp[0] = 64;
+        newThreadsPerWarp[1] = 1;
+        newWarpsPerCTA[0] = 1;
+        newWarpsPerCTA[1] = numWarps;
+        newOrder[0] = 0;
+        newOrder[1] = 1;
+        break;
+      case 512:
+        newSizePerThread[0] = targetLoadBitWidth / elemBitWidth;
+        newSizePerThread[1] = 1;
+        newThreadsPerWarp[0] = shape[kDim] / newSizePerThread[0];
+        newThreadsPerWarp[1] = 64 / newThreadsPerWarp[0];
+        newWarpsPerCTA[0] = 1;
+        newWarpsPerCTA[1] = numWarps;
+        newOrder[0] = 0;
+        newOrder[1] = 1;
+        break;
+      case 256:
+        assert(elemBitWidth == 8 && "8 bit dtype should use BLOCK_K=256");
+        newSizePerThread[0] = targetLoadBitWidth / elemBitWidth;
+        newSizePerThread[1] = 1;
+        newThreadsPerWarp[0] = 16;
+        newThreadsPerWarp[1] = 4;
+        newWarpsPerCTA[0] = 1;
+        newWarpsPerCTA[1] = numWarps;
+        newOrder[0] = 0;
+        newOrder[1] = 1;
+        break;
+      case 128:
+        assert(elemBitWidth == 16 && "16 bit dtype should use BLOCK_K=128");
+        newSizePerThread[0] = targetLoadBitWidth / elemBitWidth;
+        newSizePerThread[1] = 1;
+        newThreadsPerWarp[0] = 16;
+        newThreadsPerWarp[1] = 4;
+        newWarpsPerCTA[0] = 1;
+        newWarpsPerCTA[1] = numWarps;
+        newOrder[0] = 0;
+        newOrder[1] = 1;
+        break;
+      case 64:
+      case 32:
+      case 16:
+        assert(false && "BLOCK_K must be 128 for fp16 and 256 for int8/fp8");
+      default:
+        return failure();
+      }
     }
 
     auto newBlockedEncoding = triton::gpu::BlockedEncodingAttr::get(
