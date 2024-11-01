@@ -228,17 +228,18 @@ def get_shapes():
     shapes = [
         # (20, 17792, 13312),
         # (i, 1920, 13312) for i in (1, 10, 20, 30, 40)
-        (i, 13312, 8896) for i in (1, 10, 20, 30, 40)] +\
-             [(i, 17792, 13312) for i in (1, 10, 20, 30, 40)] +\
-             [(i, 1920, 13312) for i in (1, 10, 20, 30, 40)] +\
-             [(i, 13312, 1664) for i in (1, 10, 20, 30, 40)
-
+        # (i, 13312, 8896) for i in (1, 10, 20, 30, 40)] +\
+        #      [(i, 17792, 13312) for i in (1, 10, 20, 30, 40)] +\
+        #      [(i, 1920, 13312) for i in (1, 10, 20, 30, 40)] +\
+        #      [(i, 13312, 1664) for i in (1, 10, 20, 30, 40)
         #     (i, 13312, 8896) for i in (1, 10, 20, 30, 40, 764, 1024, 2048, 4096)] +\
         #      [(i, 17792, 13312) for i in (1, 10, 20, 30, 40, 764, 1024, 2048, 4096)] +\
         #      [(i, 1920, 13312) for i in (1, 10, 20, 30, 40, 764, 1024, 2048, 4096)] +\
         #      [(i, 13312, 1664) for i in (1, 10, 20, 30, 40, 764, 1024, 2048, 4096)] +\
-        # [(8192, 8192, 8192),
-        # (8192, 8192, 16384)
+            (i, 4608, 3584) for i in (1, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 20480)] +\
+             [(i, 3584, 3584) for i in (1, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 20480)] +\
+             [(i, 3584, 20480) for i in (1, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 20480)] +\
+             [(i, 40960, 3584) for i in (1, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 20480)
         ]
     return shapes
 
@@ -433,7 +434,7 @@ def benchmark(M, N, K, provider):
             )
         else:
             ms, min_ms, max_ms = triton.testing.do_bench(
-                lambda: gemm_a8w8_forward(out[1], a[1], b[1].T, alpha_row[1], alpha_col[1]), rep=100, quantiles=quantiles
+                lambda: gemm_a8w8_forward(out[0], a[0], b[0].T, alpha_row[0], alpha_col[0]), rep=100, quantiles=quantiles
             )
         print(f"M = {M}, N = {N}, K = {K}, type = {in_dtype}, best_config = {_triton_gemm_a8w8_kernel.best_config}")
         # print(f'A8W8 SIZE: {M},{N},{K} Best tuning config: ({_triton_gemm_a8w8_kernel.get_best_config()})')
