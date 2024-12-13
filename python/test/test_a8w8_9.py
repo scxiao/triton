@@ -399,7 +399,7 @@ def benchmark(M, N, K, provider):
 
     for _ in range(tensor_num):
         a_tmp, _ = gen_input(M, K, in_dtype, False, 1, device='cuda')
-        b_tmp, _ = gen_input(N, K, in_dtype, True, 2, device='cuda')
+        b_tmp, _ = gen_input(N, K, in_dtype, False, 2, device='cuda')
 
         # not a multiple of BLOCK_K, padding
         if K % BK != 0:
