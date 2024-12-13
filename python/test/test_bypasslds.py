@@ -222,7 +222,6 @@ def gemm_a8w8_forward(out, a, b, alpha_row, alpha_col):
     def grid(META):
         return (triton.cdiv(M, META['BLOCK_M']) * triton.cdiv(N, META['BLOCK_N']), 1, 1)
  
-    # _triton_gemm_a8w8_kernel[grid](*kwargs, enable_moe_lds_bypass=True)
     _triton_gemm_a8w8_kernel[grid](*kwargs)
  
 

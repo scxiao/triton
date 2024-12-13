@@ -28,7 +28,7 @@ stage_num=2
  
 def _get_a8w8_configs():
     a8w8_configs = [
-        triton.Config({'BLOCK_M': 16, 'BLOCK_N': 32, 'BLOCK_K': 1024, 'GROUP_SIZE_M': 1, 'matrix_instr_nonkdim': 16, 'kpack': 2}, num_stages=stage_num, num_warps=2),
+        triton.Config({'BLOCK_M': 16, 'BLOCK_N': 32, 'BLOCK_K': 512, 'GROUP_SIZE_M': 1, 'matrix_instr_nonkdim': 16, 'kpack': 2}, num_stages=stage_num, num_warps=2),
     ] if is_hip() else [
         triton.Config({'BLOCK_M': 128, 'BLOCK_N': 256, 'BLOCK_K': 64, 'GROUP_SIZE_M': 8}, num_stages=3, num_warps=8),
         triton.Config({'BLOCK_M': 64, 'BLOCK_N': 256, 'BLOCK_K': 32, 'GROUP_SIZE_M': 8}, num_stages=4, num_warps=4),
@@ -190,7 +190,7 @@ def gemm_a8w8_forward(out, a, b, alpha_row, alpha_col):
 
 def get_shapes():
     shapes = [
-        (1, 1920, 13312)
+        (20, 1920, 13312)
         # (20, 17792, 13312),
         # (i, 1920, 13312) for i in (1, 10, 20, 30, 40)
         # (i, 13312, 8896) for i in (1, 10, 20, 30, 40)] +\
@@ -355,7 +355,7 @@ def benchmark(M, N, K, provider):
 
     for _ in range(tensor_num):
         a_tmp, _ = gen_input(M, K, in_dtype, False, 1, device='cuda')
-        b_tmp, _ = gen_input(N, K, in_dtype, True, 2, device='cuda')
+        b_tmp, _ = gen_input(N, K, in_dtype, False, 2, device='cuda')
 
         # not a multiple of BLOCK_K, padding
         if K % BK != 0:
