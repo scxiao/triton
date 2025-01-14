@@ -404,6 +404,7 @@ void storeDistributedToShared(triton::gpu::MemDescType dstTy,
                               RewriterBase &rewriter,
                               const TargetInfoBase &target,
                               std::pair<size_t, Type> *const llvmOpCount) {
+  llvm::outs() << "storeToShared\n";
   bool success = emitTransferBetweenRegistersAndShared(
       srcTy, dstTy, elemLlvmTy, /*maxVecElems=*/std::nullopt, smemObj, loc,
       rewriter, target, [&](VectorType vecTy, Value vecAddr) {

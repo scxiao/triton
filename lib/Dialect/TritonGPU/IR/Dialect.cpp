@@ -630,6 +630,8 @@ LinearLayout identityStandardND(StringAttr inDimName, ArrayRef<unsigned> shape,
   MLIRContext *ctx = inDimName.getContext();
   auto rank = shape.size();
 
+  llvm::outs() << "inDimName = " << inDimName << ", rank = " << rank << ", shape = {" << shape[0] << ", " << shape[1] << "}\n";
+
   // The order in triton is written wrt. [dim0, dim1, ...].
   SmallVector<StringAttr> outDimNames = standardOutDimNames(ctx, rank);
 

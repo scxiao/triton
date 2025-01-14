@@ -487,6 +487,7 @@ LinearLayout LinearLayout::reshapeIns(
   BasesT newBases;
   int i = 0;
   for (const auto &[inDim, inDimSize] : newInDims) {
+    llvm::outs() << "inDim = " << inDim << ", dim_size = " << inDimSize << "\n";
     auto &newInDimBases = newBases[inDim];
     for (int j = 0; j < llvm::Log2_32(inDimSize); j++) {
       newInDimBases.push_back(flatBases[i++]);

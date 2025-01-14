@@ -276,6 +276,7 @@ struct MemDescTransOpConversion
   LogicalResult
   matchAndRewrite(MemDescTransOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+    llvm::outs() << "MemDescTransOpConversion11111111111111111111111\n";
     Location loc = op->getLoc();
     auto resultTy = cast<TensorOrMemDesc>(op.getType());
     auto enc = cast<SharedEncodingAttr>(resultTy.getEncoding());
@@ -283,10 +284,13 @@ struct MemDescTransOpConversion
         getTypeConverter()->convertType(resultTy.getElementType());
     auto srcSmemObj = getSharedMemoryObjectFromStruct(loc, adaptor.getSrc(),
                                                       llvmElemTy, rewriter);
+    llvm::outs() << "srcStride = (" << srcSmemObj.strides[0] << ", " << srcSmemObj.strides[1] << ")\n";
+    llvm::outs() << "offsets = (" << srcSmemObj.offsets[0] << ", " << srcSmemObj.offsets[1] << ")\n";
     auto dstSmemObj = SharedMemoryObject(
         srcSmemObj.base, srcSmemObj.baseElemType,
         /*strides=*/applyPermutation(srcSmemObj.strides, op.getOrder()),
         /*offsets=*/applyPermutation(srcSmemObj.offsets, op.getOrder()));
+    
     auto retVal = getStructFromSharedMemoryObject(loc, dstSmemObj, rewriter);
     rewriter.replaceOp(op, retVal);
     return success();
@@ -299,7 +303,10 @@ struct TransOpConversion : public ConvertOpToLLVMPattern<TransOp> {
   matchAndRewrite(TransOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     Location loc = op->getLoc();
+    llvm::outs() << "TransOpConversion22222222222222222222\n";
     auto resultTy = cast<RankedTensorType>(op.getType());
+    llvm::outs() << "src = " << op.getSrc().getType() << "\n";
+    llvm::outs() << "resultTy = " << resultTy << "\n";
     if (auto enc =
             mlir::dyn_cast<BlockedEncodingAttr>(resultTy.getEncoding())) {
       // If the dst encoding is blocked, then TransOp::inferReturnTypes

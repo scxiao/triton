@@ -145,6 +145,7 @@ private:
   lowerDistributedToDistributed(ConvertLayoutOp op, OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter,
                                 const TargetInfoBase &targetInfo) const {
+    llvm::outs() << "lowerDistributedToDistributed333333333333\n";
     auto loc = op.getLoc();
     auto typeConverter = getTypeConverter();
     RankedTensorType srcTy = op.getSrc().getType();
@@ -256,6 +257,38 @@ struct ConvertLayoutOpBlockedToDotOpShortcutConversion
   }
 };
 
+void printLinearLayout(const std::string& str, const LinearLayout& layout) {
+  llvm::outs() << "--------------- LinearLayout: " << str << " --------------- \n";
+  auto inDimNames = layout.getInDimNames();
+  auto outDimNames = layout.getOutDimNames();
+  llvm::outs() << "InDimsNames: ";
+  for (auto name : inDimNames) {
+    llvm::outs() << "{" << name << ": " << layout.getInDimSize(name) << "}, ";
+  }
+  llvm::outs() << "\n";
+  llvm::outs() << "OutDimsNames: ";
+  for (auto name : outDimNames) {
+    llvm::outs() << "{" << name << ": " << layout.getOutDimSize(name) << "}, ";
+  }
+  llvm::outs() << "\n";
+  llvm::outs() << "basis:\n";
+  for (auto name : inDimNames) {
+    llvm::outs() << "\t" << name << ": ";
+    int32_t sizeLog2 = layout.getInDimSizeLog2(name);
+    for (int i = 0; i < sizeLog2; ++i) {
+      auto basis = layout.getBasis(name, i);
+      char c = '{';
+      for (auto b : basis) {
+        llvm::outs() << c << b;
+        if (c == '{') c = ',';
+      }
+      llvm::outs() << "},  ";
+    }
+    llvm::outs() << "\n";
+  }
+  llvm::outs() << "=========================================================\n\n";
+}
+
 struct ConvertLayoutOpUsingLinearLayoutsConversion
     : public ConvertOpToLLVMPattern<ConvertLayoutOp> {
   const TargetInfoBase &targetInfo;
@@ -271,6 +304,9 @@ struct ConvertLayoutOpUsingLinearLayoutsConversion
   LogicalResult
   matchAndRewrite(ConvertLayoutOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+
+    llvm::outs() << "ConvertLayoutOp_LinearLayout4444444444\n";
+      
     MLIRContext *ctx = op.getContext();
 
     const auto &shape = op.getType().getShape();
@@ -282,10 +318,15 @@ struct ConvertLayoutOpUsingLinearLayoutsConversion
       return rewriter.notifyMatchFailure(
           op, "NYI. srcTy and/or dstTy don't implement LLs yet");
     }
+    llvm::outs() << "loc1\n";
+    llvm::outs() << "srcTy = " << srcTy.getEncoding() << "\n";
+    llvm::outs() << "dstTy = " << dstTy.getEncoding() << "\n";
     LinearLayout srcLayout =
         *toLinearLayout(srcTy.getShape(), srcTy.getEncoding());
+    llvm::outs() << "loc2\n";
     LinearLayout dstLayout =
         *toLinearLayout(dstTy.getShape(), dstTy.getEncoding());
+    llvm::outs() << "loc3\n";
 
     StringAttr kBlock = str_attr("block");
     StringAttr kWarp = str_attr("warp");
@@ -301,6 +342,7 @@ struct ConvertLayoutOpUsingLinearLayoutsConversion
       return rewriter.notifyMatchFailure(
           op, "NYI: Transfer between different CTAs");
     } else if (llvm::is_contained(dims, kWarp)) {
+      llvm::outs() << "transferWithinBlock\n";
       // Case 2: Transfer between values in the same CTA, in which case we move
       //         values through shared memory.
       return transferWithinBlock(op, srcLayout, dstLayout, adaptor, rewriter);
@@ -455,6 +497,11 @@ struct ConvertLayoutOpUsingLinearLayoutsConversion
     Value laneId = urem(threadId, threadsPerWarp);
     Value warpId = udiv(threadId, threadsPerWarp);
 
+
+    printLinearLayout("srcBlocked", srcLayout);
+    printLinearLayout("dstBlocked", dstLayout);
+
+
     auto scratchConfig =
         getScratchConfigForCvt(op.getSrc().getType(), op.getType());
     auto tensorShapePerCTA = convertType<unsigned, int64_t>(getShapePerCTA(
@@ -463,6 +510,7 @@ struct ConvertLayoutOpUsingLinearLayoutsConversion
     // Output dims: dimN-1, dimN-2, ..., dim0, where N is obtained from repShape
     LinearLayout sharedLayout = chooseShemLayoutForRegToRegConversion(
         ctx, tensorShapePerCTA, scratchConfig.repShape, scratchConfig.order);
+    printLinearLayout("shared", sharedLayout);
 
     // Layout for the store from registers to shared memory.
     //
@@ -482,12 +530,17 @@ struct ConvertLayoutOpUsingLinearLayoutsConversion
                          /*swizzleByteSize=*/0)
                    : srcLayout.invertAndCompose(sharedLayout);
 
+    printLinearLayout("sharedStore", shmemStoreLayout);
+
     const int shmemAllocatedNumElems =
         getNumScratchElements(scratchConfig.paddedRepShape);
+    // llvm::outs() << "order = {" << scratchConfig.order[0] << ", " << scratchConfig.order[1] << "}, ";
+    // llvm::outs() << "padded_shape = " << scratchConfig.paddedRepShape[0] << ", " << scratchConfig.paddedRepShape[1] << "\n";
     assert(shmemStoreLayout.getOutDimSize(kOffset) <= shmemAllocatedNumElems);
 
     // Layout for the load from shmem to registers.
     LinearLayout shmemLoadLayout = dstLayout.invertAndCompose(sharedLayout);
+    printLinearLayout("sharedLoad", shmemLoadLayout);
 
     // Check that the `register` fully determines the `iteration`.  That is,
     // each thread does exactly the same reads and writes to shmem on each
@@ -502,6 +555,25 @@ struct ConvertLayoutOpUsingLinearLayoutsConversion
         collectRegsForIter(ctx, shmemStoreLayout);
     SmallVector<SmallVector<int>> outRegsForIter =
         collectRegsForIter(ctx, shmemLoadLayout);
+
+    llvm::outs() << "inRegsForIter=\n";
+    for (auto v1 : inRegsForIter) {
+      llvm::outs() << "{";
+      for (auto v2 : v1) {
+        llvm::outs() << v2 << ", ";
+      }
+      llvm::outs() << "}\n";
+    }
+    llvm::outs() << "\n";
+    llvm::outs() << "outRegsForIter=\n";
+    for (auto v1 : outRegsForIter) {
+      llvm::outs() << "{";
+      for (auto v2 : v1) {
+        llvm::outs() << v2 << ", ";
+      }
+      llvm::outs() << "}\n";
+    }
+    llvm::outs() << "\n";
 
     Value smemBase =
         LLVM::getSharedMemoryBase(loc, rewriter, targetInfo, op.getOperation());
@@ -527,6 +599,8 @@ struct ConvertLayoutOpUsingLinearLayoutsConversion
     auto paddedSize =
         scratchConfig.paddedRepShape[scratchConfig.order[0]] - paddedStride;
 
+    llvm::outs() << "paddedStride = " << paddedStride << ", paddedSize = " << paddedSize << "\n";
+
     // Linear layout function is split in two parts below:
     //
     // L(r, t, w, b) = L(0, t, w, b) xor L(r, 0, 0, 0)
@@ -542,12 +616,14 @@ struct ConvertLayoutOpUsingLinearLayoutsConversion
                                 {kWarp, 0},
                                 {kBlock, 0}})[0]
                         .second;
+      llvm::outs() << "regIdx = " << regIdx << ", regBase = " << regBase << "\n";
       Value offset = xor_(regBase, i32_val(regIdx));
       if (paddedSize > 0) {
         assert(llvm::isPowerOf2_32(paddedStride));
         assert(llvm::isPowerOf2_32(paddedSize));
         auto rshiftVal = llvm::Log2_32(paddedStride);
         auto lshiftVal = llvm::Log2_32(paddedSize);
+        llvm::outs() << "rShiftVal = " << rshiftVal << ", lshiftVal = " << lshiftVal << "\n";
         offset = add(shl(lshr(offset, i32_val(rshiftVal)), i32_val(lshiftVal)),
                      offset);
       }
@@ -581,8 +657,10 @@ struct ConvertLayoutOpUsingLinearLayoutsConversion
       // not contiguous
       auto inVec = isStMatrix ? shmemStoreLayout.getNumConsecutiveInOut()
                               : scratchConfig.inVec;
+      llvm::outs() << "inVec = " << inVec << "\n";
       for (int j = 0; j < inVals.size() / iterations; j += inVec) {
         auto inRegSlice = inRegs[j];
+        llvm::outs() << "storeVecAddr\n";
         Value vecAddr = getVecAddr(shmemStoreLayout, storeBase, inRegSlice);
         SmallVector<Value> inValsVec;
         for (int k = 0; k < inVec; k++)
@@ -597,9 +675,10 @@ struct ConvertLayoutOpUsingLinearLayoutsConversion
       }
 
       barrier();
-
+      llvm::outs() << "outSize = " << outSize << ", outVec = " << scratchConfig.outVec << "\n";
       for (int j = 0; j < outSize / iterations; j += scratchConfig.outVec) {
         auto outRegSlice = outRegs[j];
+        llvm::outs() << "loadVecAddr\n";
         auto vecAddr = getVecAddr(shmemLoadLayout, loadBase, outRegSlice);
         Value valsVec =
             targetInfo.loadDShared(rewriter, loc, vecAddr, std::nullopt,

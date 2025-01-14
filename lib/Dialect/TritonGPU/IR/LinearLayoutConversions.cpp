@@ -907,6 +907,8 @@ LinearLayout getLayoutWithinBlock(const LinearLayout &layout) {
 LinearLayout chooseShemLayoutForRegToRegConversion(
     MLIRContext *ctx, ArrayRef<unsigned> tensorShape,
     ArrayRef<unsigned> repShape, ArrayRef<unsigned> order) {
+  llvm::outs() << "shared_shape = {" << tensorShape[0] << ", " << tensorShape[1] << "}, order = {" << order[0] << ", " << order[1] << "}\n";
+  llvm::outs() << "repShape = {" << repShape[0] << ", " << repShape[1] << "}\n";
   auto outDimNames = standardOutDimNames(ctx, tensorShape.size());
   LinearLayout layout = LinearLayout::empty();
   SmallVector<StringAttr> kRepDims;

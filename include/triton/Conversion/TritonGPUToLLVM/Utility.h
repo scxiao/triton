@@ -1398,6 +1398,7 @@ inline Value getStructFromSharedMemoryObject(Location loc,
   Value llvmStruct = rewriter.create<LLVM::UndefOp>(loc, structTy);
   for (const auto &v : llvm::enumerate(elems)) {
     assert(v.value() && "can not insert null values");
+    llvm::outs() << "sharedElemVal = (" << v.index() << " :::::: " << v.value() << "\n";
     llvmStruct = insert_val(structTy, llvmStruct, v.value(), v.index());
   }
   return llvmStruct;
