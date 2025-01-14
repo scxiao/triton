@@ -458,6 +458,8 @@ public:
   int32_t getTotalInDimSizeLog2() const;
   int32_t getTotalInDimSize() const { return 1 << getTotalInDimSizeLog2(); }
 
+  void printLayoutInfo(const std::string &layoutName = "") const;
+
   // getOutDimSize(dim) == s means that there exists an input value that will
   // produce each output value in [0,s) (if the layout is surjective).
   //
