@@ -1057,4 +1057,39 @@ std::string LinearLayout::toString() const {
   return ret;
 }
 
+void LinearLayout::printLayoutInfo(const std::string &layoutName) const {
+  llvm::outs() << "--------------- LinearLayout: " << layoutName
+               << " --------------- \n";
+  auto inDimNames = getInDimNames();
+  auto outDimNames = getOutDimNames();
+  llvm::outs() << "InDimsNames: ";
+  for (auto name : inDimNames) {
+    llvm::outs() << "{" << name << ": " << getInDimSize(name) << "}, ";
+  }
+  llvm::outs() << "\n";
+  llvm::outs() << "OutDimsNames: ";
+  for (auto name : outDimNames) {
+    llvm::outs() << "{" << name << ": " << getOutDimSize(name) << "}, ";
+  }
+  llvm::outs() << "\n";
+  llvm::outs() << "basis:\n";
+  for (auto name : inDimNames) {
+    llvm::outs() << "\t" << name << ": ";
+    int32_t sizeLog2 = getInDimSizeLog2(name);
+    for (int i = 0; i < sizeLog2; ++i) {
+      auto basis = getBasis(name, i);
+      char c = '{';
+      for (auto b : basis) {
+        llvm::outs() << c << b;
+        if (c == '{')
+          c = ',';
+      }
+      llvm::outs() << "},  ";
+    }
+    llvm::outs() << "\n";
+  }
+  llvm::outs()
+      << "=========================================================\n\n";
+}
+
 } // namespace mlir::triton
