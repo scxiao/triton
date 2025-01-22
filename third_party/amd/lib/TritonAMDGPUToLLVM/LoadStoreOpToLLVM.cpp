@@ -1296,17 +1296,17 @@ struct AtomicRMWOpConversion
     // tt::atomicRmwOp(%ptr, %val, %mask):
     // 0. Group thread by pairs. Master thread is (tid % 2 == 0);
     // 1. All the threads send %val to (tid - 1) thread via dppUpdateOp shl, so
-    //    all the masters recieve value from secondary threads;
+    //    all the masters receive value from secondary threads;
     // 2. Take into account parity in the %mask value, build control flow
     //    structures according to it;
     // 3. Generate llvm::atomicRmwOp in the threads enabled by %mask value;
     // 4. All the threads send result of generated operation to (tid + 1) thread
-    //    via dppUpdateOp shl, so all secondary thread also recieve their
+    //    via dppUpdateOp shl, so all secondary thread also receive their
     //    result.
     //
     // This approach enables us to use half the active threads committing atomic
     // requests to avoid generating of code providing unified access to f16
-    // element and reduce contantion.
+    // element and reduce contention.
     bool useDppForPackedF16 = false;
     // tensor
     if (tensorTy) {
@@ -1314,11 +1314,12 @@ struct AtomicRMWOpConversion
       bool isF16Ty = valueElemTy.isF16() || valueElemTy.isBF16();
       unsigned availableVecSize = isF16Ty ? 2 : 1;
       vec = std::min<unsigned>(vec, availableVecSize);
-      // Force F16 packing  in the case it's not comming in as packed, but the
+      // Force F16 packing in the case it's not coming in as packed, but the
       // ISA can support packed atomic instructions.
       useDppForPackedF16 =
           supportsGlobalAtomicF16PackedAndDpp(targetInfo.getISAFamily()) &&
-          vec == 1 && isF16Ty && atomicRmwAttr == RMWOp::FADD;
+          vec == 1 && isF16Ty && atomicRmwAttr == RMWOp::FADD &&
+          !enableIntraWaveReduce;
       // mask
       numElems = tensorTy.getNumElements();
     }
@@ -1326,6 +1327,10 @@ struct AtomicRMWOpConversion
     auto tid = getThreadId(rewriter, loc);
     mask = b.and_(mask, b.icmp_slt(b.mul(tid, b.i32_val(elemsPerThread)),
                                    b.i32_val(numElems)));
+
+    // If it is figured out that atomic packing is applicable, execute packed
+    // instruction on even threads, otherwise execute 2 non packed ones.
+    // Anyways, disable odd threads.
     if (useDppForPackedF16)
       mask = b.and_(mask, b.icmp_eq(b.urem(tid, b.i32_val(2)), b.i32_val(0)));
 
@@ -1348,7 +1353,12 @@ struct AtomicRMWOpConversion
       Value rmwMask = llMask ? b.and_(mask, maskElements[i]) : mask;
 
       Value operand;
+      Value rightNeighbourAddr;
+      Value enablePackedOpt;
       if (useDppForPackedF16) {
+        // First check if odd threads hold adjacent ptrs to even.
+        Value castedAddr = b.ptrtoint(i64_ty, rmwPtr);
+
         // Move %val to left neighbour to proceed packed atomic further.
         Value packedVal = b.null(packF16Ty);
         packedVal = b.insert_element(packF16Ty, packedVal, valElements[i],
@@ -1356,15 +1366,22 @@ struct AtomicRMWOpConversion
         // Pack to i32 type to simplify transaction
         packedVal = b.bitcast(packedVal, i32_ty);
         Value dppMoveRes = shiftLeftI32ByDpp(rewriter, packedVal);
+
+        rightNeighbourAddr =
+            genI32TiledOp(rewriter, shiftLeftI32ByDpp, castedAddr);
+
+        enablePackedOpt = b.icmp_eq(
+            rightNeighbourAddr,
+            b.add(castedAddr,
+                  b.i64_val(valueElemTy.getIntOrFloatBitWidth() / 8)));
         // Unpack results back
         Value unpackedDppRes = b.bitcast(dppMoveRes, packF16Ty);
         operand = b.undef(packF16Ty);
         operand =
             b.insert_element(packF16Ty, operand, valElements[i], b.i32_val(0));
-        operand = b.insert_element(
-            packF16Ty, operand,
-            b.extract_element(valueElemTy, unpackedDppRes, b.i32_val(0)),
-            b.i32_val(1));
+        Value extracted =
+            b.extract_element(valueElemTy, unpackedDppRes, b.i32_val(0));
+        operand = b.insert_element(packF16Ty, operand, extracted, b.i32_val(1));
       } else if (vec == 1) {
         operand = valElements[i];
       } else {
@@ -1389,10 +1406,51 @@ struct AtomicRMWOpConversion
       rewriter.setInsertionPointToEnd(atomicBlock);
       auto maybeKind = matchAtomicOp(atomicRmwAttr);
       Value atom;
+      Value isVecOp;
       if (enableIntraWaveReduce) {
         atom = atomicIntraWaveReduce(rewriter, rmwPtr, operand, *maybeKind,
                                      atomicMemOrdering, scopeStr.value());
       } else {
+        if (useDppForPackedF16) {
+          // Determine on the runtime what intrinsic to execute: packed or
+          // regular.
+          auto *atomicVectorBlock =
+              atomicBlock->splitBlock(rewriter.getInsertionPoint());
+          auto *atomicNonVectorBlock =
+              rewriter.createBlock(atomicBlock->getParent(),
+                                   std::next(Region::iterator(atomicBlock)));
+
+          rewriter.setInsertionPointToEnd(atomicBlock);
+
+          rewriter.create<LLVM::CondBrOp>(
+              loc, enablePackedOpt, atomicVectorBlock, atomicNonVectorBlock);
+
+          rewriter.setInsertionPointToEnd(atomicNonVectorBlock);
+          Value pairedOperand =
+              b.extract_element(valueElemTy, operand, b.i32_val(1));
+          Value atomNonVec0 =
+              rewriter
+                  .create<LLVM::AtomicRMWOp>(loc, *maybeKind, rmwPtr,
+                                             valElements[i], atomicMemOrdering,
+                                             StringRef(scopeStr.value()))
+                  .getResult();
+          rightNeighbourAddr = b.inttoptr(rmwPtr.getType(), rightNeighbourAddr);
+          Value atomNonVec1 =
+              rewriter
+                  .create<LLVM::AtomicRMWOp>(
+                      loc, *maybeKind, rightNeighbourAddr, pairedOperand,
+                      atomicMemOrdering, StringRef(scopeStr.value()))
+                  .getResult();
+          Value packedRes = b.null(packF16Ty);
+          packedRes =
+              b.insert_element(packF16Ty, packedRes, atomNonVec0, b.i32_val(0));
+          packedRes =
+              b.insert_element(packF16Ty, packedRes, atomNonVec1, b.i32_val(1));
+          rewriter.create<LLVM::BrOp>(loc, packedRes, endBlock);
+
+          // Just start to fill up `atomicVectorBlock`.
+          rewriter.setInsertionPointToEnd(atomicVectorBlock);
+        }
         atom = rewriter
                    .create<LLVM::AtomicRMWOp>(loc, *maybeKind, rmwPtr, operand,
                                               atomicMemOrdering,
