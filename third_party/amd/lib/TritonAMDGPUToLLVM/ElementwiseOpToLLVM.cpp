@@ -345,6 +345,33 @@ static Value convertBf16ToFp32(Location loc,
   return bitcast(shifted, f32_ty);
 }
 
+Value buildGCNInstruction(Location loc, 
+                          ConversionPatternRewriter &rewritter,
+                          const std::string &instr_name,
+                          const SmallVector<std::string> &constraints,
+                          const SmallVector<Value> &vals,
+                          Type ret_type) {
+  assert(constraints.size() == vals.size() + 1);
+  assert(vals.size() == 2 or vals.size() == 3);
+  GCNBuilder builder;
+  auto &instr = *builder.create(instr_name);
+  auto out = builder.newOperand(constraints[0]);
+  SmallVector<GCNBuilder::Operand*> operands;
+  for (int i = 0; i < vals.size(); ++i) {
+    operands.push_back(builder.newOperand(vals[i], constraints[i + 1]));
+  }
+
+  if (vals.size() == 2) {
+    instr(out, operands[0], operands[1]);
+  }
+  else {
+    instr(out, operands[0], operands[1], operands[2]);
+  }
+
+  return builder.launch(rewritter, loc, ret_type, false);
+}
+
+
 static Value convertFp32ToBf16(Location loc,
                                ConversionPatternRewriter &rewriter,
                                const Value &v, const RoundingMode rounding) {
@@ -355,71 +382,110 @@ static Value convertFp32ToBf16(Location loc,
     return bitcast(truncated, bf16_ty);
   }
 
-  GCNBuilder builder0;
-  // build v_cmp_u_f32 instruction
-  std::string cmp_ins_str = "v_cmp_u_f32";
-  auto &check_nan = *builder0.create(cmp_ins_str);
-  // output chk_nan: uint32_tx2
-  // auto val_0 = i64_val(0);
-  auto is_nan = builder0.newOperand("=s");
-  // input v : f32
-  auto in_f32 = builder0.newOperand(v, "+v");
-  check_nan(is_nan, in_f32, in_f32);
-  auto is_nan_ret = builder0.launch(rewriter, loc, i64_ty, false);
+  SmallVector<std::string> constraints0 = {"=s", "v", "v"};
+  SmallVector<Value> vals0 = {v, v};
+  auto is_nan_ret = buildGCNInstruction(loc, rewriter, "v_cmp_u_f32", constraints0, vals0, i64_ty);
 
-  // build v_bfe_u32 instruction
-  GCNBuilder builder1;
-  std::string ins_bfe = "v_bfe_u32";
-  auto &bfe = *builder1.create(ins_bfe);
-  // output tmp
-  // Value tmp_val = i32_val(0);
-  auto tmp = builder1.newOperand("=v");
   auto val_16 = i32_val(16);
   auto val_1  = i32_val(1);
-  auto in_f32_1 = builder1.newOperand(v, "+v");
-  auto offset = builder1.newOperand(val_16, "v");
-  auto sz = builder1.newOperand(val_1, "v");
-  bfe(tmp, in_f32_1, offset, sz);
-  auto tmp_ret = builder1.launch(rewriter, loc, i32_ty, false);
+  SmallVector<std::string> constraints1 = {"=v", "v", "v", "v"};
+  SmallVector<Value> vals1 = {v, val_16, val_1};
+  auto tmp_ret = buildGCNInstruction(loc, rewriter, "v_bfe_u32", constraints1, vals1, i32_ty);
 
-  GCNBuilder builder2;
-  // build v_add3_u32 instruction
-  std::string add3_str = "v_add3_u32";
-  auto &add3 = *builder2.create(add3_str);
-  // input: round_bais
-  auto tmp2 = builder2.newOperand("=v");
-  auto in_f32_2 = builder2.newOperand(v, "+v");
+  SmallVector<std::string> constraints2 = {"=v", "v", "v", "v"};
   auto val_7FFF = i32_val(0x7FFF);
-  auto tmp_in = builder2.newOperand(tmp_ret, "v");
-  auto round_bias = builder2.newOperand(val_7FFF, "v");
-  add3(tmp2, in_f32_2, tmp_in, round_bias);
-  auto tmp_ret1 = builder2.launch(rewriter, loc, i32_ty, false);
+  SmallVector<Value> vals2 = {v, tmp_ret, val_7FFF};
+  auto tmp_ret1 = buildGCNInstruction(loc, rewriter, "v_add3_u32", constraints2, vals2, i32_ty);
 
-  GCNBuilder builder3;
-  // build v_cndmask_b32
-  std::string cndmask_str = "v_cndmask_b32";
-  auto &cndmask = *builder3.create(cndmask_str);
-  auto cndmask_out = builder3.newOperand("=v");
+  SmallVector<std::string> constraints3 = {"=v", "v", "v", "s"};
   auto val_nan = i32_val(0x7FFF0000);
-  auto tmp_in1 = builder3.newOperand(tmp_ret1, "v");
-  auto f32_nan = builder3.newOperand(val_nan, "v");
-  auto is_nan_in = builder3.newOperand(is_nan_ret, "s");
-  cndmask(cndmask_out, tmp_in1, f32_nan, is_nan_in);
-  auto cndmask_ret = builder3.launch(rewriter, loc, i32_ty, false);
+  SmallVector<Value> vals3 = {tmp_ret1, val_nan, is_nan_ret};
+  auto cndmask_ret = buildGCNInstruction(loc, rewriter, "v_cndmask_b32", constraints3, vals3, i32_ty);
 
-  GCNBuilder builder4;
-  // build v_lshrrev_b32
-  std::string lshrrev_str = "v_lshrrev_b32";
-  auto &lshrrev = *builder4.create(lshrrev_str);
-  auto output = builder4.newOperand("=v");
-  auto offset1 = builder4.newOperand(val_16, "v");
-  auto cndmask_in = builder4.newOperand(cndmask_ret, "v");
-  lshrrev(output, offset1, cndmask_in);
+  // SmallVector<std::string> constraints4 = {"=v", "v", "v"};
+  // SmallVector<Value> vals4 = {val_16, cndmask_ret};
+  // auto res = buildGCNInstruction(loc, rewriter, "v_lshrrev_b32", constraints4, vals4, i32_ty);
+  auto shifted = lshr(i32_ty, cndmask_ret, val_16);
 
-  auto res = builder4.launch(rewriter, loc, i32_ty, false);
-  auto truncated = trunc(i16_ty, res);
+  auto truncated = trunc(i16_ty, shifted);
   return bitcast(truncated, bf16_ty);
 }
+
+// static Value convertFp32ToBf16(Location loc,
+//                                ConversionPatternRewriter &rewriter,
+//                                const Value &v, const RoundingMode rounding) {
+//   if (rounding == RoundingMode::RTZ) {
+//     auto as_int32 = bitcast(v, i32_ty);
+//     auto shifted = lshr(i32_ty, as_int32, i32_val(16));
+//     auto truncated = trunc(i16_ty, shifted);
+//     return bitcast(truncated, bf16_ty);
+//   }
+
+//   GCNBuilder builder0;
+//   // build v_cmp_u_f32 instruction
+//   std::string cmp_ins_str = "v_cmp_u_f32";
+//   auto &check_nan = *builder0.create(cmp_ins_str);
+//   // output chk_nan: uint32_tx2
+//   // auto val_0 = i64_val(0);
+//   auto is_nan = builder0.newOperand("=s");
+//   // input v : f32
+//   auto in_f32 = builder0.newOperand(v, "+v");
+//   check_nan(is_nan, in_f32, in_f32);
+//   auto is_nan_ret = builder0.launch(rewriter, loc, i64_ty, false);
+
+//   // build v_bfe_u32 instruction
+//   GCNBuilder builder1;
+//   std::string ins_bfe = "v_bfe_u32";
+//   auto &bfe = *builder1.create(ins_bfe);
+//   // output tmp
+//   // Value tmp_val = i32_val(0);
+//   auto tmp = builder1.newOperand("=v");
+//   auto val_16 = i32_val(16);
+//   auto val_1  = i32_val(1);
+//   auto in_f32_1 = builder1.newOperand(v, "+v");
+//   auto offset = builder1.newOperand(val_16, "v");
+//   auto sz = builder1.newOperand(val_1, "v");
+//   bfe(tmp, in_f32_1, offset, sz);
+//   auto tmp_ret = builder1.launch(rewriter, loc, i32_ty, false);
+
+//   GCNBuilder builder2;
+//   // build v_add3_u32 instruction
+//   std::string add3_str = "v_add3_u32";
+//   auto &add3 = *builder2.create(add3_str);
+//   // input: round_bais
+//   auto tmp2 = builder2.newOperand("=v");
+//   auto in_f32_2 = builder2.newOperand(v, "+v");
+//   auto val_7FFF = i32_val(0x7FFF);
+//   auto tmp_in = builder2.newOperand(tmp_ret, "v");
+//   auto round_bias = builder2.newOperand(val_7FFF, "v");
+//   add3(tmp2, in_f32_2, tmp_in, round_bias);
+//   auto tmp_ret1 = builder2.launch(rewriter, loc, i32_ty, false);
+
+//   GCNBuilder builder3;
+//   // build v_cndmask_b32
+//   std::string cndmask_str = "v_cndmask_b32";
+//   auto &cndmask = *builder3.create(cndmask_str);
+//   auto cndmask_out = builder3.newOperand("=v");
+//   auto val_nan = i32_val(0x7FFF0000);
+//   auto tmp_in1 = builder3.newOperand(tmp_ret1, "v");
+//   auto f32_nan = builder3.newOperand(val_nan, "v");
+//   auto is_nan_in = builder3.newOperand(is_nan_ret, "s");
+//   cndmask(cndmask_out, tmp_in1, f32_nan, is_nan_in);
+//   auto cndmask_ret = builder3.launch(rewriter, loc, i32_ty, false);
+
+//   GCNBuilder builder4;
+//   // build v_lshrrev_b32
+//   std::string lshrrev_str = "v_lshrrev_b32";
+//   auto &lshrrev = *builder4.create(lshrrev_str);
+//   auto output = builder4.newOperand("=v");
+//   auto offset1 = builder4.newOperand(val_16, "v");
+//   auto cndmask_in = builder4.newOperand(cndmask_ret, "v");
+//   lshrrev(output, offset1, cndmask_in);
+
+//   auto res = builder4.launch(rewriter, loc, i32_ty, false);
+//   auto truncated = trunc(i16_ty, res);
+//   return bitcast(truncated, bf16_ty);
+// }
 
 static Value Fp8E5M2FNUZ_to_Fp16_oneValue(Location loc,
                                           ConversionPatternRewriter &rewriter,
