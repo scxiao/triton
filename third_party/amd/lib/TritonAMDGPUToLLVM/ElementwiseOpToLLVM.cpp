@@ -374,7 +374,7 @@ static Value convertFp32ToBf16(Location loc,
   // output tmp
   // Value tmp_val = i32_val(0);
   auto tmp = builder1.newOperand("=v");
-  auto val_16 = i32_val(0x7FFF000);
+  auto val_16 = i32_val(16);
   auto val_1  = i32_val(1);
   auto in_f32_1 = builder1.newOperand(v, "+v");
   auto offset = builder1.newOperand(val_16, "v");
@@ -418,8 +418,8 @@ static Value convertFp32ToBf16(Location loc,
 
   auto res = builder4.launch(rewriter, loc, i32_ty, false);
 
-  auto shifted = lshr(i32_ty, res, i32_val(16));
-  auto truncated = trunc(i16_ty, shifted);
+  // auto shifted = lshr(i32_ty, res, i32_val(16));
+  auto truncated = trunc(i16_ty, res);
   return bitcast(truncated, bf16_ty);
 
   // auto bf16x2VecTy = vec_ty(bf16_ty, 2);
