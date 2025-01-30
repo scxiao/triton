@@ -67,7 +67,15 @@ struct DotOpMFMAConversionHelper {
     Value zeroFlag = b.i32_val(0);
     OperationState loweredOp(loc, mfmaInsnName);
     loweredOp.addTypes(resType);
-    loweredOp.addOperands({valA, valB, valC, zeroFlag, zeroFlag, zeroFlag});
+    if (mfmaInsnName.ends_with(".bf16")) {
+      auto vecTy = dyn_cast<VectorType>(valA.getType());
+      auto castA = b.bitcast(valA, vec_ty(bf16_ty, vecTy.getNumElements()));
+      vecTy = dyn_cast<VectorType>(valB.getType());
+      auto castB = b.bitcast(valB, vec_ty(bf16_ty, vecTy.getNumElements()));
+      loweredOp.addOperands({castA, castB, valC, zeroFlag, zeroFlag, zeroFlag});
+    }
+    else
+      loweredOp.addOperands({valA, valB, valC, zeroFlag, zeroFlag, zeroFlag});
     return rewriter.create(loweredOp)->getResult(0);
   }
 

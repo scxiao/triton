@@ -30,6 +30,18 @@ int getMfmaVersion(ISAFamily isaFamily) {
   return 0;
 }
 
+int getMfmaVersion(StringRef archGen) {
+  if (archGen.contains("gfx950"))
+    return 4;
+  if (archGen.contains("gfx94"))
+    return 3;
+  if (archGen.contains("gfx90A"))
+    return 2;
+  if (archGen.contains("gfx908"))
+    return 1;
+  return 0;
+}
+
 int getWmmaVersion(StringRef archGen) {
   if (archGen.contains("gfx11"))
     return 1;
@@ -488,7 +500,6 @@ public:
     Value dotOutput =
         convertAndCastTensor(rewriter, newDot, oldRetType.getEncoding(),
                              oldRetType.getElementType());
-
     rewriter.replaceOp(dotOp, dotOutput);
 
     return success();
@@ -889,12 +900,16 @@ public:
     ModuleOp m = getOperation();
 
     RewritePatternSet patterns(context);
+    StringRef arch(archGenerationName);
+    if (arch.contains("gfx950"))
+      patterns.add<::BlockedToMFMA, ::ScaledBlockedToMFMA>(
+          context, getMfmaVersion(archGenerationName), matrixInstructionSize, kPack);
     switch (auto isaFamily = triton::AMD::deduceISAFamily(archGenerationName)) {
     case ISAFamily::CDNA1:
     case ISAFamily::CDNA2:
     case ISAFamily::CDNA3:
       patterns.add<::BlockedToMFMA, ::ScaledBlockedToMFMA>(
-          context, getMfmaVersion(isaFamily), matrixInstructionSize, kPack);
+          context, getMfmaVersion(archGenerationName), matrixInstructionSize, kPack);
       break;
     case ISAFamily::RDNA3:
       patterns.add<::BlockedToWMMA>(context,
