@@ -1273,12 +1273,19 @@ struct TruncFOpConversion
   using Base::Base;
   using Adaptor = typename Base::OpAdaptor;
 
+  explicit TruncFOpConversion(LLVMTypeConverter &typeConverter,
+                              ModuleAxisInfoAnalysis &axisAnalysisPass,
+                              llvm::AMDGPU::GPUKind gpuKind,
+                              PatternBenefit benefit = patternBenefitDefault)
+      : ElementwiseOpConversionBase(typeConverter, axisAnalysisPass, benefit),
+        gpuKind(gpuKind) {}
+
   SmallVector<Value> createDestOps(mlir::arith::TruncFOp op, OpAdaptor adaptor,
                                    ConversionPatternRewriter &rewriter,
                                    Type elemTy, MultipleOperandsRange operands,
                                    Location loc) const {
     auto outElemTy = getElementType(op.getOut());
-    if (outElemTy.isBF16()) {
+    if (outElemTy.isBF16() && gpuKind != llvm::AMDGPU::GK_GFX950) {
       auto inElemTy = getElementType(op.getIn());
       assert(inElemTy.isF32() && "unsupported conversion");
       return {
@@ -1287,6 +1294,9 @@ struct TruncFOpConversion
       return {rewriter.create<LLVM::FPTruncOp>(loc, elemTy, operands[0][0])};
     }
   }
+
+private:
+  llvm::AMDGPU::GPUKind gpuKind;
 };
 
 struct ExpOpConversionApprox
@@ -1580,7 +1590,8 @@ void populateElementwiseOpToLLVMPatterns(
   patterns.add<FMulOpConversion>(typeConverter, axisInfoAnalysis, benefit);
 
   patterns.add<ExtFOpConversion>(typeConverter, axisInfoAnalysis, benefit);
-  patterns.add<TruncFOpConversion>(typeConverter, axisInfoAnalysis, benefit);
+  patterns.add<TruncFOpConversion>(typeConverter, axisInfoAnalysis,
+                                   targetInfo.getGPUKind(), benefit);
   patterns.add<FPToSIOpConversion>(typeConverter, axisInfoAnalysis, benefit);
   patterns.add<SIToFPOpConversion>(typeConverter, axisInfoAnalysis, benefit);
   patterns.add<FpToFpOpConversion>(typeConverter, axisInfoAnalysis,
