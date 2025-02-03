@@ -140,8 +140,8 @@ FailureOr<MfmaInsn> chooseMfmaInstruction(RankedTensorType cType,
   if (mDim == 0 || nDim == 0)
     return failure();
 
-  auto maybeMfmaInsn = MfmaInsn::selectMfma(mDim, nDim, inputKSize, aElemType, bElemType,
-                                            mfmaVersion, allowXF32);
+  auto maybeMfmaInsn = MfmaInsn::selectMfma(mDim, nDim, inputKSize, aElemType,
+                                            bElemType, mfmaVersion, allowXF32);
   if (failed(maybeMfmaInsn))
     llvm::report_fatal_error("No match found in MFMA database\n");
 
@@ -158,8 +158,8 @@ FailureOr<MfmaInsn> chooseMfmaInstruction(RankedTensorType cType,
 FailureOr<MfmaInsn> chooseMfmaInstruction(tt::DotOp dot, int mfmaVersion,
                                           int nonKDim) {
   RankedTensorType aType = dot.getA().getType();
-  bool allowXF32 =
-      dot.getInputPrecision() == InputPrecision::TF32 && (mfmaVersion == 3 || mfmaVersion == 4);
+  bool allowXF32 = dot.getInputPrecision() == InputPrecision::TF32 &&
+                   (mfmaVersion == 3 || mfmaVersion == 4);
   return chooseMfmaInstruction(dot.getC().getType(), aType.getElementType(),
                                dot.getB().getType().getElementType(),
                                aType.getShape().back(), mfmaVersion, allowXF32,
@@ -903,13 +903,15 @@ public:
     StringRef arch(archGenerationName);
     if (arch.contains("gfx950"))
       patterns.add<::BlockedToMFMA, ::ScaledBlockedToMFMA>(
-          context, getMfmaVersion(archGenerationName), matrixInstructionSize, kPack);
+          context, getMfmaVersion(archGenerationName), matrixInstructionSize,
+          kPack);
     switch (auto isaFamily = triton::AMD::deduceISAFamily(archGenerationName)) {
     case ISAFamily::CDNA1:
     case ISAFamily::CDNA2:
     case ISAFamily::CDNA3:
       patterns.add<::BlockedToMFMA, ::ScaledBlockedToMFMA>(
-          context, getMfmaVersion(archGenerationName), matrixInstructionSize, kPack);
+          context, getMfmaVersion(archGenerationName), matrixInstructionSize,
+          kPack);
       break;
     case ISAFamily::RDNA3:
       patterns.add<::BlockedToWMMA>(context,

@@ -188,11 +188,11 @@ struct DotOpMFMAConversionHelper {
     auto elemTyA = aTensorTy.getElementType();
     auto elemTyB = bTensorTy.getElementType();
 
-    bool allowXF32 =
-        op.getInputPrecision() == InputPrecision::TF32 && (mfmaVersion == 3 || mfmaVersion == 4);
+    bool allowXF32 = op.getInputPrecision() == InputPrecision::TF32 &&
+                     (mfmaVersion == 3 || mfmaVersion == 4);
     StringRef mfmaInsnName;
-    auto maybeMfmaInsn = MfmaInsn::selectMfma(mDim, nDim, kDim, elemTyA, elemTyB,
-                                              mfmaVersion, allowXF32);
+    auto maybeMfmaInsn = MfmaInsn::selectMfma(mDim, nDim, kDim, elemTyA,
+                                              elemTyB, mfmaVersion, allowXF32);
     if (failed(maybeMfmaInsn))
       llvm::report_fatal_error("No match found in MFMA database\n");
 
@@ -412,14 +412,18 @@ struct DotOpMFMAConversionHelper {
           } else {
             SmallVector<Value> vals;
             if (type.isF32() && allowXF32) {
-              vals = extractOperands(rawElems, kWidth, kBase, f32_ty, preserveBF16);
+              vals = extractOperands(rawElems, kWidth, kBase, f32_ty,
+                                     preserveBF16);
             } else if (type.getIntOrFloatBitWidth() == 8) {
-              vals = extractOperands(rawElems, kWidth, kBase, i8_ty, preserveBF16);
+              vals =
+                  extractOperands(rawElems, kWidth, kBase, i8_ty, preserveBF16);
             } else if (type.isBF16()) {
-              vals = extractOperands(rawElems, kWidth, kBase, bf16_ty, preserveBF16);
+              vals = extractOperands(rawElems, kWidth, kBase, bf16_ty,
+                                     preserveBF16);
             } else {
               assert(type.isF16() && "Unsupported data type");
-              vals = extractOperands(rawElems, kWidth, kBase, f16_ty, preserveBF16);
+              vals = extractOperands(rawElems, kWidth, kBase, f16_ty,
+                                     preserveBF16);
             }
             for (int k = 0; k < kpack; ++k) {
               dotOpVals[k][{b, i, j}] = vals[k];

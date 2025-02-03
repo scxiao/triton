@@ -24,7 +24,7 @@ enum class MfmaTypeId : uint32_t {
 };
 
 struct MfmaInsnGroupSelectKey {
-  unsigned mDim, nDim,kDim;
+  unsigned mDim, nDim, kDim;
   MfmaTypeId elemType;
   int mfmaVersion;
 };
@@ -59,8 +59,9 @@ struct MfmaInsnGroupSelectKeyInfo
 
   static inline bool isEqual(const MfmaInsnGroupSelectKey &lhs,
                              const MfmaInsnGroupSelectKey &rhs) {
-    return lhs.mDim == rhs.mDim && lhs.nDim == rhs.nDim && lhs.kDim == rhs.kDim &&
-           lhs.elemType == rhs.elemType && lhs.mfmaVersion == rhs.mfmaVersion;
+    return lhs.mDim == rhs.mDim && lhs.nDim == rhs.nDim &&
+           lhs.kDim == rhs.kDim && lhs.elemType == rhs.elemType &&
+           lhs.mfmaVersion == rhs.mfmaVersion;
   }
 
   static unsigned getHashValue(const MfmaInsnGroupSelectKey &key) {
@@ -79,9 +80,10 @@ private:
   MfmaInsnAttr attr;
 
 public:
-  static FailureOr<MfmaInsn> selectMfma(unsigned mDim, unsigned nDim, unsigned kDim,
-                                        Type elementTypeA, Type elementTypeB,
-                                        int mfmaVersion, bool allowXF32);
+  static FailureOr<MfmaInsn> selectMfma(unsigned mDim, unsigned nDim,
+                                        unsigned kDim, Type elementTypeA,
+                                        Type elementTypeB, int mfmaVersion,
+                                        bool allowXF32);
   MfmaInsn(Type elementTypeA, Type elementTypeB, const MfmaInsnAttr &attr);
   unsigned getKDim();
   unsigned getMDim();

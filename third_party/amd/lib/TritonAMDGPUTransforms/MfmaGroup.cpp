@@ -303,7 +303,7 @@ auto getMfmaInsnGroupAttrMap = []() -> const MfmaInsnGroupMap & {
       // mfma_f32_16x16x32_BF8_BF8
       {{16, 16, 0, MfmaTypeId::Bf8Bf8TyId, 4},
        {16, 16, 32, 8, ROCDL::mfma_f32_16x16x32_bf8_bf8::getOperationName()}},
-       };
+  };
   return MfmaInsnMap;
 };
 
@@ -339,20 +339,22 @@ std::pair<mlir::Type, mlir::Type> TypesFromMfmaId(mlir::MLIRContext *ctx,
   }
 }
 
-FailureOr<MfmaInsn> MfmaInsn::selectMfma(unsigned mDim, unsigned nDim, unsigned kDim,
-                                         Type elementTypeA, Type elementTypeB,
-                                         int mfmaVersion, bool allowXF32) {
+FailureOr<MfmaInsn> MfmaInsn::selectMfma(unsigned mDim, unsigned nDim,
+                                         unsigned kDim, Type elementTypeA,
+                                         Type elementTypeB, int mfmaVersion,
+                                         bool allowXF32) {
   auto mfmaInsnAttrMap = getMfmaInsnGroupAttrMap();
   MfmaTypeId mfmaId =
       chooseAppropriateMfmaId(elementTypeA, elementTypeB, allowXF32);
-  // gfx950:  
-  if (mfmaVersion == 4 && (mfmaId == MfmaTypeId::Fp16TyId || mfmaId == MfmaTypeId::Bf16TyId)){
+  // gfx950:
+  if (mfmaVersion == 4 &&
+      (mfmaId == MfmaTypeId::Fp16TyId || mfmaId == MfmaTypeId::Bf16TyId)) {
     if (mDim == 16 && nDim == 16 && kDim >= 32)
       kDim = 32;
     else if (mDim == 32 && nDim == 32 && kDim >= 16)
-     kDim = 16;
-   else 
-     kDim = 0;
+      kDim = 16;
+    else
+      kDim = 0;
   }
   // non-gfx950: ignore kDim
   else
