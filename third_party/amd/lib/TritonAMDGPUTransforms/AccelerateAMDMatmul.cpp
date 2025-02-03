@@ -140,7 +140,7 @@ FailureOr<MfmaInsn> chooseMfmaInstruction(RankedTensorType cType,
   if (mDim == 0 || nDim == 0)
     return failure();
 
-  auto maybeMfmaInsn = MfmaInsn::selectMfma(mDim, nDim, aElemType, bElemType,
+  auto maybeMfmaInsn = MfmaInsn::selectMfma(mDim, nDim, inputKSize, aElemType, bElemType,
                                             mfmaVersion, allowXF32);
   if (failed(maybeMfmaInsn))
     llvm::report_fatal_error("No match found in MFMA database\n");
@@ -159,7 +159,7 @@ FailureOr<MfmaInsn> chooseMfmaInstruction(tt::DotOp dot, int mfmaVersion,
                                           int nonKDim) {
   RankedTensorType aType = dot.getA().getType();
   bool allowXF32 =
-      dot.getInputPrecision() == InputPrecision::TF32 && mfmaVersion == 3;
+      dot.getInputPrecision() == InputPrecision::TF32 && (mfmaVersion == 3 || mfmaVersion == 4);
   return chooseMfmaInstruction(dot.getC().getType(), aType.getElementType(),
                                dot.getB().getType().getElementType(),
                                aType.getShape().back(), mfmaVersion, allowXF32,
@@ -433,7 +433,7 @@ public:
     mfmaEnc = ttg::AMDMfmaEncodingAttr::get(
         oldRetType.getContext(),
         /*versionMajor*/ mfmaVersion, /*versionMinor*/ 0, warpsPerTile,
-        /*instrShape*/ mDim, nDim, isTransposed, CTALayout);
+        /*instrShape*/ mDim, nDim, kDim, isTransposed, CTALayout);
 
     Type mfmaAccType;
     if (oldRetType.getElementType().isIntOrIndex())
@@ -599,7 +599,7 @@ public:
     // for global store instructions.
     auto mfmaEnc = ttg::AMDMfmaEncodingAttr::get(
         ctx, /*versionMajor=*/mfmaVersion, /*versionMinor=*/0, mfmaWarpsPerCTA,
-        /*instrShape=*/mDim, nDim, /*isTransposed=*/true, ctaLayout);
+        /*instrShape=*/mDim, nDim, kDim, /*isTransposed=*/true, ctaLayout);
 
     auto newRetType = RankedTensorType::get(
         oldRetType.getShape(), oldRetType.getElementType(), mfmaEnc);

@@ -60,7 +60,7 @@ public:
     SmallVector<unsigned> cOrd(warps.size());
     std::iota(cOrd.begin(), cOrd.end(), 0);
     return AMDMfmaEncodingAttr::get(
-        &ctx, /*versionMajor=*/2, /*versionMinor=*/0, warps, mDim, nDim,
+        &ctx, /*versionMajor=*/2, /*versionMinor=*/0, warps, mDim, nDim, 0,
         isTransposed, CTALayoutAttr::get(&ctx, cpg, cSplit, cOrd));
   }
 

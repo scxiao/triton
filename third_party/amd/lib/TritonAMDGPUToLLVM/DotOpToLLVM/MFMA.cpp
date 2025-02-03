@@ -174,6 +174,7 @@ struct DotOpMFMAConversionHelper {
     auto warpsPerCTA = mfmaLayout.getWarpsPerCTA();
     auto mDim = mfmaLayout.getMDim();
     auto nDim = mfmaLayout.getNDim();
+    auto kDim = mfmaLayout.getKDim();
     auto mfmaVersion = mfmaLayout.getVersionMajor();
     assert((mDim == nDim && (mDim == 32 || mDim == 16 || mDim == 4)) ||
            (mDim == 64 && nDim == 4) || (mDim == 4 && nDim == 64));
@@ -190,7 +191,7 @@ struct DotOpMFMAConversionHelper {
     bool allowXF32 =
         op.getInputPrecision() == InputPrecision::TF32 && (mfmaVersion == 3 || mfmaVersion == 4);
     StringRef mfmaInsnName;
-    auto maybeMfmaInsn = MfmaInsn::selectMfma(mDim, nDim, elemTyA, elemTyB,
+    auto maybeMfmaInsn = MfmaInsn::selectMfma(mDim, nDim, kDim, elemTyA, elemTyB,
                                               mfmaVersion, allowXF32);
     if (failed(maybeMfmaInsn))
       llvm::report_fatal_error("No match found in MFMA database\n");

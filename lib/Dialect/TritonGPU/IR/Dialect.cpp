@@ -1654,7 +1654,7 @@ Attribute AMDMfmaEncodingAttr::parse(AsmParser &parser, Type type) {
 
   return parser.getChecked<AMDMfmaEncodingAttr>(
       parser.getContext(), versionMajor, versionMinor, warpsPerCTA,
-      instrShape[0], instrShape[1], isTransposed, *CTALayout);
+      instrShape[0], instrShape[1], instrShape[2], isTransposed, *CTALayout);
 }
 
 void AMDMfmaEncodingAttr::print(AsmPrinter &printer) const {
@@ -1673,7 +1673,7 @@ LogicalResult
 AMDMfmaEncodingAttr::verify(function_ref<mlir::InFlightDiagnostic()> emitError,
                             unsigned versionMajor, unsigned versionMinor,
                             llvm::ArrayRef<unsigned int> warpsPerCTA,
-                            unsigned mDim, unsigned nDim, bool isTransposed,
+                            unsigned mDim, unsigned nDim, unsigned kDim, bool isTransposed,
                             mlir::triton::gpu::CTALayoutAttr) {
   if (!(versionMajor >= 0 && versionMajor <= 4)) {
     return emitError() << "major version must be in the [0, 4] range";
