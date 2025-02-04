@@ -389,10 +389,10 @@ ScanOpConversion::getDelinearizedIds(ConversionPatternRewriter &rewriter,
 
   auto threadsPerWarp = triton::gpu::getThreadsPerWarp(srcEncoding);
   auto warpsPerCTA = triton::gpu::getWarpsPerCTA(srcEncoding);
-  auto order = triton::gpu::getOrder(srcEncoding);
+  auto threadOrder = triton::gpu::getThreadOrder(srcEncoding);
   auto warpOrder = triton::gpu::getWarpOrder(srcEncoding);
   SmallVector<Value> multiDimLaneId =
-      delinearize(rewriter, loc, laneId, threadsPerWarp, order);
+      delinearize(rewriter, loc, laneId, threadsPerWarp, threadOrder);
   SmallVector<Value> multiDimWarpId =
       delinearize(rewriter, loc, warpId, warpsPerCTA, warpOrder);
 
@@ -402,7 +402,7 @@ ScanOpConversion::getDelinearizedIds(ConversionPatternRewriter &rewriter,
   multiDimLaneId[axis] = i32_val(0);
   threadsPerWarp[axis] = 1;
   Value laneIdParallel =
-      linearize(rewriter, loc, multiDimLaneId, threadsPerWarp, order);
+      linearize(rewriter, loc, multiDimLaneId, threadsPerWarp, threadOrder);
   multiDimWarpId[axis] = i32_val(0);
   warpsPerCTA[axis] = 1;
   Value warpIdParallel =
@@ -461,7 +461,7 @@ ScanOpConversion::emitFastScan(triton::ScanOp op, triton::ScanOpAdaptor adaptor,
   ScanLoweringHelper helper(op);
   auto loc = helper.getLoc();
   if (!helper.isSupported())
-    return failure();
+    return op.emitError("TODO: unsupported scan layout");
 
   Value threadId = getThreadId(rewriter, loc);
   auto mod = op->getParentOfType<ModuleOp>();
@@ -469,6 +469,14 @@ ScanOpConversion::emitFastScan(triton::ScanOp op, triton::ScanOpAdaptor adaptor,
   Value warpSize = i32_val(iWarpSize);
   Value warpId = udiv(threadId, warpSize);
   Value laneId = urem(threadId, warpSize);
+
+  // Clamp the lane ID to just threads with unique data within a warp.
+  LinearLayout layout =
+      triton::gpu::toLinearLayout(helper.getShape(), helper.getEncoding());
+  StringAttr kLane = rewriter.getStringAttr("lane");
+  int32_t laneMask = layout.getFreeVariableMasks()[kLane];
+  laneMask = (layout.getInDimSize(kLane) - 1) & ~laneMask;
+  laneId = and_(laneId, i32_val(laneMask));
 
   auto [laneIdAxis, warpIdAxis, flatIdParallel] =
       getDelinearizedIds(rewriter, helper, laneId, warpId);

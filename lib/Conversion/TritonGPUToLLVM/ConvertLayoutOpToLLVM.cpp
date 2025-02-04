@@ -16,13 +16,7 @@
 
 namespace {
 
-using ::mlir::isLayoutMmaV1;
-using ::mlir::LLVM::getMultiDimOffset;
-using ::mlir::LLVM::getSharedMemoryObjectFromStruct;
-using ::mlir::LLVM::getStridesFromShapeAndOrder;
-using ::mlir::LLVM::getWrappedMultiDimOffset;
-using ::mlir::LLVM::linearize;
-
+using namespace mlir;
 using namespace mlir::triton::gpu;
 
 // XXX(Keren): A temporary knob to control the use of legacy MMA conversion
@@ -56,8 +50,7 @@ private:
     return isa<BlockedEncodingAttr, MmaEncodingTrait, SliceEncodingAttr>(
                srcLayout) &&
            isa<BlockedEncodingAttr, MmaEncodingTrait, SliceEncodingAttr>(
-               dstLayout) &&
-           !isLayoutMmaV1(srcLayout) && !isLayoutMmaV1(dstLayout);
+               dstLayout);
   }
 
   // shared memory rd/st for blocked or mma layout with data padding
@@ -108,13 +101,14 @@ private:
       //       of performance issue observed.
       for (unsigned elemId = 0; elemId < accumSizePerThread; elemId += vec) {
         SmallVector<Value> multiDimOffset =
-            getMultiDimOffset(layout, loc, rewriter, targetInfo, elemId, type,
-                              multiDimCTAInRepId, shapePerCTATile);
-        SmallVector<Value> multiDimOffsetWrapped = getWrappedMultiDimOffset(
-            rewriter, loc, multiDimOffset, origRepShape, shapePerCTATile,
-            shapePerCTA);
-        Value offset = linearize(rewriter, loc, multiDimOffsetWrapped,
-                                 paddedRepShape, outOrd);
+            LLVM::getMultiDimOffset(layout, loc, rewriter, targetInfo, elemId,
+                                    type, multiDimCTAInRepId, shapePerCTATile);
+        SmallVector<Value> multiDimOffsetWrapped =
+            LLVM::getWrappedMultiDimOffset(rewriter, loc, multiDimOffset,
+                                           origRepShape, shapePerCTATile,
+                                           shapePerCTA);
+        Value offset = LLVM::linearize(rewriter, loc, multiDimOffsetWrapped,
+                                       paddedRepShape, outOrd);
         auto elemPtrTy = smemBase.getType();
         Value ptr = gep(elemPtrTy, llvmElemTy, smemBase, offset);
         auto vecTy = vec_ty(llvmElemTy, vec);
@@ -176,8 +170,8 @@ private:
     SmallVector<unsigned> outNumCTAsEachRep(rank);
     SmallVector<unsigned> inNumCTAs(rank);
     SmallVector<unsigned> outNumCTAs(rank);
-    auto srcShapePerCTATile = getShapePerCTATile(srcLayout, srcTy.getShape());
-    auto dstShapePerCTATile = getShapePerCTATile(dstLayout, shape);
+    auto srcShapePerCTATile = getShapePerCTATile(srcLayout);
+    auto dstShapePerCTATile = getShapePerCTATile(dstLayout);
     auto shapePerCTA = getShapePerCTA(srcLayout, shape);
 
     for (unsigned d = 0; d < rank; ++d) {
@@ -270,7 +264,7 @@ struct ConvertLayoutOpUsingLinearLayoutsConversion
   // conversions.  TODO(jlebar): Eventually we want this to be the only pattern.
   explicit ConvertLayoutOpUsingLinearLayoutsConversion(
       LLVMTypeConverter &typeConverter, const TargetInfoBase &targetInfo,
-      PatternBenefit benefit = 2)
+      PatternBenefit benefit = 1)
       : ConvertOpToLLVMPattern(typeConverter, benefit), targetInfo(targetInfo) {
   }
 
@@ -283,46 +277,49 @@ struct ConvertLayoutOpUsingLinearLayoutsConversion
     auto srcTy = op.getSrc().getType();
     auto dstTy = op.getType();
 
-    auto conversion = minimalCvtLayout(srcTy, dstTy);
-    if (!conversion.has_value()) {
-      return rewriter.notifyMatchFailure(
-          op, "NYI. srcTy and/or dstTy don't implement LLs yet");
-    }
+    LinearLayout conversion = minimalCvtLayout(srcTy, dstTy);
+    LinearLayout srcLayout =
+        toLinearLayout(srcTy.getShape(), srcTy.getEncoding());
+    LinearLayout dstLayout =
+        toLinearLayout(dstTy.getShape(), dstTy.getEncoding());
 
-    assert(to_vector(conversion->getInDimNames()) ==
-           to_vector(conversion->getOutDimNames()));
-    auto dims = conversion->getInDimNames();
-    if (llvm::is_contained(dims, str_attr("block"))) {
+    StringAttr kBlock = str_attr("block");
+    StringAttr kWarp = str_attr("warp");
+    StringAttr kLane = str_attr("lane");
+    StringAttr kRegister = str_attr("register");
+
+    assert(to_vector(conversion.getInDimNames()) ==
+           to_vector(conversion.getOutDimNames()));
+    auto dims = conversion.getInDimNames();
+    if (llvm::is_contained(dims, kBlock)) {
       // Case 1: Transfer between values in different CTAs.
       //          This requires moving values through distributed shared memory.
       return rewriter.notifyMatchFailure(
           op, "NYI: Transfer between different CTAs");
-    } else if (llvm::is_contained(dims, str_attr("warp"))) {
+    } else if (llvm::is_contained(dims, kWarp)) {
       // Case 2: Transfer between values in the same CTA, in which case we move
       //         values through shared memory.
-      LinearLayout srcLayout =
-          *toLinearLayout(srcTy.getShape(), srcTy.getEncoding());
-      LinearLayout dstLayout =
-          *toLinearLayout(dstTy.getShape(), dstTy.getEncoding());
       return transferWithinBlock(op, srcLayout, dstLayout, adaptor, rewriter);
-    } else if (llvm::is_contained(dims, str_attr("lane"))) {
+    } else if (llvm::is_contained(dims, kLane)) {
       // Case 3. Transfer between values in the same warp, in which case we try
       //         to move values using warp shuffles, though if the pattern is
       //         complicated enough we may fall back to using shared memory
-      // TODO(Keren): implement warp shuffle instead of using the general
-      // approach that uses shared memory
-      LinearLayout srcLayout =
-          *toLinearLayout(srcTy.getShape(), srcTy.getEncoding());
-      LinearLayout dstLayout =
-          *toLinearLayout(dstTy.getShape(), dstTy.getEncoding());
+      if (auto decomposedCvt =
+              getWarpLayoutConvertDecomposition(srcTy, dstTy)) {
+        transferWithinWarp(op, *decomposedCvt, adaptor, rewriter);
+        return success();
+      }
+      // TODO: Since data is only transferred within a warp over shared memory,
+      // we should use `bar.warp.sync` instead of `barrier`, which will improve
+      // latency when warps issue barriers on different cycles.
       return transferWithinBlock(op, srcLayout, dstLayout, adaptor, rewriter);
-    } else if (llvm::is_contained(dims, str_attr("register"))) {
+    } else if (llvm::is_contained(dims, kRegister)) {
       // Case 4. Transfer between values in the same thread, in which case we
       //         simply reorder the elements of adaptor.getSrc().
-      return transferWithinThread(op, *conversion, adaptor, rewriter);
+      return transferWithinThread(op, conversion, adaptor, rewriter);
     } else {
-      // The two layouts are equivalent. We should probably remove these in
-      // RemoveLayoutConversion.
+      // Cast 5. The two layouts are equivalent. We should probably remove
+      // these in RemoveLayoutConversion.
       rewriter.replaceOp(op, adaptor.getSrc());
       return success();
     }
@@ -337,10 +334,11 @@ struct ConvertLayoutOpUsingLinearLayoutsConversion
     StringAttr kRegister = str_attr("register");
     assert(!cvtNeedsSharedMemory(op.getSrc().getType(), op.getType()));
 
+    auto srcTy = op.getSrc().getType();
+    auto dstTy = op.getType();
     auto inVals = unpackLLElements(loc, adaptor.getSrc(), rewriter);
-    SmallVector<Value> outVals;
-    outVals.resize(conversion.getInDimSize(kRegister));
-    for (int i = 0; i < conversion.getInDimSize(kRegister); i++) {
+    SmallVector<Value> outVals(conversion.getInDimSize(kRegister));
+    for (int i = 0; i < outVals.size(); i++) {
       auto srcIdx = conversion.apply({{kRegister, i}}).begin()->second;
       outVals[i] = inVals[srcIdx];
     }
@@ -360,41 +358,19 @@ struct ConvertLayoutOpUsingLinearLayoutsConversion
     auto srcTy = op.getSrc().getType();
     auto dstTy = op.getType();
 
-    // TODO (Keren): Currently, we handle general mma/blocked/slice ->
-    // mma/blocked/slice conversions.
-    // The following tasks must be completed before we can remove the layoutIsOK
-    // check:
-    // 1. Support for AMD's MFMA and WMMA
     std::function<bool(Attribute)> layoutIsOK = [&](Attribute layout) {
-      if (auto nvidiaMma = dyn_cast<NvidiaMmaEncodingAttr>(layout)) {
-        if (useLegacyMMAConversion) {
-          return false;
-        }
-        return true;
+      if (isa<MmaEncodingTrait>(layout)) {
+        return !useLegacyMMAConversion;
       }
       if (auto dotOperand = dyn_cast<DotOperandEncodingAttr>(layout)) {
-        if (auto nvidiaMma =
-                dyn_cast<NvidiaMmaEncodingAttr>(dotOperand.getParent())) {
-          if (product(getCTAsPerCGA(nvidiaMma)) > 1) {
-            return false;
-          }
-          if (useLegacyMMAConversion) {
-            return false;
-          }
-          // FIXME [Dot LL]
-          // Enabling LL path for buggy kWidth path
-          bool largeKWidth =
-              dotOperand.getKWidth() * dstTy.getElementTypeBitWidth() > 64;
-          return largeKWidth && nvidiaMma.isAmpere();
+        if (isa<MmaEncodingTrait>(dotOperand.getParent())) {
+          return !useLegacyMMAConversion;
         }
-      }
-      if (isa<BlockedEncodingAttr>(layout)) {
-        return true;
       }
       if (auto slice = dyn_cast<SliceEncodingAttr>(layout)) {
         return layoutIsOK(slice.getParent());
       }
-      return false;
+      return true;
     };
     if (!layoutIsOK(srcTy.getEncoding()) || !layoutIsOK(dstTy.getEncoding())) {
       return failure();
@@ -447,27 +423,18 @@ struct ConvertLayoutOpUsingLinearLayoutsConversion
       }
     }
 
-    // FIXME [Dot LL]
-    // We know it's just for largeKWidth case in Ampere
-    // In this case, we need to pack the outputs into i32
-    if (isa<DotOperandEncodingAttr>(dstTy.getEncoding())) {
-      auto concat = [&](Value a, Value b) {
-        return or_(zext(i32_ty, bitcast(a, i16_ty)),
-                   shl(zext(i32_ty, bitcast(b, i16_ty)), i32_val(16)));
-      };
-
-      SmallVector<Value> outVals32(outVals.size() / 2);
-      for (int i = 0; i < outVals32.size(); ++i) {
-        outVals32[i] = concat(outVals[2 * i], outVals[2 * i + 1]);
-      }
-      outVals = outVals32;
-    }
-
     Value result = packLLElements(loc, getTypeConverter(), outVals, rewriter,
                                   op.getType());
     rewriter.replaceOp(op, result);
     return success();
   }
+
+  // Use warp shuffles to implement a layout conversion where data only needs to
+  // be moved within warps.
+  void transferWithinWarp(ConvertLayoutOp op,
+                          DecomposedWarpConversion decomposed,
+                          OpAdaptor adaptor,
+                          ConversionPatternRewriter &rewriter) const;
 
   SmallVector<Value>
   transferWithinBlockImpl(ArrayRef<Value> inVals, ConvertLayoutOp op,
@@ -505,19 +472,18 @@ struct ConvertLayoutOpUsingLinearLayoutsConversion
     // don't need to avoid duplicate writes.
     // Input dims: [reg, lane, warp]
     // Output dims: [offset, iteration]
-    std::optional<LinearLayout> shmemStoreLayout =
-        chooseStMatrixLayout(ctx, op.getSrc().getType(), scratchConfig.repShape,
-                             scratchConfig.paddedRepShape, scratchConfig.order,
-                             /*swizzleByteSize=*/0);
-    bool isStMatrix = shmemStoreLayout.has_value();
-    if (!isStMatrix) {
-      shmemStoreLayout = srcLayout.invertAndCompose(sharedLayout);
-    }
-    assert(shmemStoreLayout.has_value());
+    bool isStMatrix = targetInfo.canUseStMatrix(
+        op.getSrc().getType(), scratchConfig.repShape,
+        scratchConfig.paddedRepShape, scratchConfig.order,
+        /*swizzleByteSize=*/0);
+    LinearLayout shmemStoreLayout =
+        isStMatrix ? chooseStMatrixLayout(ctx, op.getSrc().getType(),
+                                          /*swizzleByteSize=*/0)
+                   : srcLayout.invertAndCompose(sharedLayout);
 
     const int shmemAllocatedNumElems =
         getNumScratchElements(scratchConfig.paddedRepShape);
-    assert(shmemStoreLayout->getOutDimSize(kOffset) <= shmemAllocatedNumElems);
+    assert(shmemStoreLayout.getOutDimSize(kOffset) <= shmemAllocatedNumElems);
 
     // Layout for the load from shmem to registers.
     LinearLayout shmemLoadLayout = dstLayout.invertAndCompose(sharedLayout);
@@ -525,14 +491,14 @@ struct ConvertLayoutOpUsingLinearLayoutsConversion
     // Check that the `register` fully determines the `iteration`.  That is,
     // each thread does exactly the same reads and writes to shmem on each
     // iteration, just with different input/output registers.
-    assert(shmemStoreLayout->sublayoutIsZero({kLane, kWarp, kBlock},
-                                             {kIteration}));
+    assert(
+        shmemStoreLayout.sublayoutIsZero({kLane, kWarp, kBlock}, {kIteration}));
     assert(
         shmemLoadLayout.sublayoutIsZero({kLane, kWarp, kBlock}, {kIteration}));
 
     // iteration -> registers
     SmallVector<SmallVector<int>> inRegsForIter =
-        collectRegsForIter(ctx, *shmemStoreLayout);
+        collectRegsForIter(ctx, shmemStoreLayout);
     SmallVector<SmallVector<int>> outRegsForIter =
         collectRegsForIter(ctx, shmemLoadLayout);
 
@@ -589,7 +555,7 @@ struct ConvertLayoutOpUsingLinearLayoutsConversion
       return vecAddr;
     };
 
-    auto storeBase = applyLinearLayout(loc, rewriter, *shmemStoreLayout,
+    auto storeBase = applyLinearLayout(loc, rewriter, shmemStoreLayout,
                                        {{kRegister, i32_val(0)},
                                         {kLane, laneId},
                                         {kWarp, warpId},
@@ -612,11 +578,11 @@ struct ConvertLayoutOpUsingLinearLayoutsConversion
 
       // When using `stmatrix`, we can store `inVec` elements even if they are
       // not contiguous
-      auto inVec = isStMatrix ? shmemStoreLayout->getNumConsecutiveInOut()
+      auto inVec = isStMatrix ? shmemStoreLayout.getNumConsecutiveInOut()
                               : scratchConfig.inVec;
       for (int j = 0; j < inVals.size() / iterations; j += inVec) {
         auto inRegSlice = inRegs[j];
-        Value vecAddr = getVecAddr(*shmemStoreLayout, storeBase, inRegSlice);
+        Value vecAddr = getVecAddr(shmemStoreLayout, storeBase, inRegSlice);
         SmallVector<Value> inValsVec;
         for (int k = 0; k < inVec; k++)
           inValsVec.push_back(inVals[inRegSlice + k]);
@@ -675,22 +641,88 @@ struct ConvertLayoutOpUsingLinearLayoutsConversion
 
 } // namespace
 
-void mlir::triton::populateConvertLayoutOpUsingLinearLayoutsToLLVMPattern(
-    LLVMTypeConverter &typeConverter, const TargetInfoBase &targetInfo,
-    RewritePatternSet &patterns, PatternBenefit benefit) {
-  patterns.add<ConvertLayoutOpUsingLinearLayoutsConversion>(
-      typeConverter, targetInfo, benefit);
+void ConvertLayoutOpUsingLinearLayoutsConversion::transferWithinWarp(
+    ConvertLayoutOp op, DecomposedWarpConversion decomposed, OpAdaptor adaptor,
+    ConversionPatternRewriter &rewriter) const {
+  MLIRContext *ctx = op.getContext();
+  Location loc = op.getLoc();
+  StringAttr kRegister = str_attr("register");
+  StringAttr kLane = str_attr("lane");
+  assert(!cvtNeedsSharedMemory(op.getSrc().getType(), op.getType()));
+  auto [P1, Cp, P2inv, reducedP1, reducedP2] = std::move(decomposed);
+
+  // Grab the source elements and prepare the outputs of just the shuffles.
+  SmallVector<Value> srcValues =
+      unpackLLElements(loc, adaptor.getSrc(), rewriter);
+  SmallVector<Value> shflOuts(Cp.getInDimSize(kRegister));
+
+  Value threadId = getThreadId(rewriter, loc);
+  Value threadsPerWarp = i32_val(Cp.getInDimSize(kLane));
+  Value laneId = urem(threadId, threadsPerWarp);
+
+  // Emit one shuffle per destination register.
+  for (int i : llvm::seq(shflOuts.size())) {
+    // 'Cp' maps a (dst_lane, dst_reg) -> (src_lane, src_reg), and we know that
+    // for a register, it does not map to different registers in the same lane.
+    // At the same time, for each register, P1 returns the source value index
+    // to provide as the shuffle value.
+    auto out = applyLinearLayout(loc, rewriter, P1,
+                                 {{kLane, laneId}, {kRegister, i32_val(i)}});
+    assert(out.size() == 1);
+    Value srcRegIdx = out.front().second;
+    // The size of the input lane dimension is the number of selects to emit.
+    // TODO(jeff): For dtypes smaller than i32, we can use byte permutes and
+    // shuffle multiple values at a time.
+    Value shflSrc = undef(srcValues.front().getType());
+    for (int j : llvm::seq(reducedP1.getInDimSize(kLane))) {
+      int32_t check =
+          reducedP1.apply({{kLane, j}, {kRegister, i}}).front().second;
+      shflSrc =
+          select(icmp_eq(srcRegIdx, i32_val(check)), srcValues[check], shflSrc);
+    }
+
+    out = applyLinearLayout(loc, rewriter, Cp,
+                            {{kLane, laneId}, {kRegister, i32_val(i)}});
+    assert(out.size() == 1);
+    Value shflIdx = out.front().second;
+    shflOuts[i] = targetInfo.shuffleIdx(rewriter, loc, shflSrc, shflIdx);
+  }
+
+  // Finally, we just need to apply P2 to the shflOuts to permute the registers
+  // into their final form. Use the same trick to reduce the number of emitted
+  // selects.
+  SmallVector<Value> results(shflOuts.size());
+  for (int i : llvm::seq(results.size())) {
+    Value result = undef(srcValues.front().getType());
+
+    auto out = applyLinearLayout(loc, rewriter, P2inv,
+                                 {{kLane, laneId}, {kRegister, i32_val(i)}});
+    Value resultIdx = out.front().second;
+    for (int j : llvm::seq(reducedP2.getInDimSize(kLane))) {
+      int32_t check =
+          reducedP2.apply({{kLane, j}, {kRegister, i}}).front().second;
+      result =
+          select(icmp_eq(resultIdx, i32_val(check)), shflOuts[check], result);
+    }
+    results[i] = result;
+  }
+
+  Value result =
+      packLLElements(loc, getTypeConverter(), results, rewriter, op.getType());
+  rewriter.replaceOp(op, result);
 }
 
 void mlir::triton::populateConvertLayoutOpToLLVMPatterns(
     LLVMTypeConverter &typeConverter, const TargetInfoBase &targetInfo,
     RewritePatternSet &patterns, PatternBenefit benefit) {
-  // We prefer using the linear layout conversion, so it gets a higher benefit.
-  // Eventually the LL conversion will subsume all of the others and be the only
-  // one left.
-  mlir::triton::populateConvertLayoutOpUsingLinearLayoutsToLLVMPattern(
-      typeConverter, targetInfo, patterns, benefit.getBenefit() + 1);
+  if (useLegacyMMAConversion) {
+    // Prioritize the legacy MMA conversion over the LinearLayout conversion.
+    // Only for debugging purposes.
+    patterns.add<ConvertLayoutOpConversion>(typeConverter, targetInfo,
+                                            benefit.getBenefit() + 1);
+  }
+  patterns.add<ConvertLayoutOpUsingLinearLayoutsConversion>(
+      typeConverter, targetInfo, benefit);
   patterns.add<ConvertLayoutOpBlockedToDotOpShortcutConversion>(
       typeConverter, targetInfo, benefit);
-  patterns.add<ConvertLayoutOpConversion>(typeConverter, targetInfo, benefit);
 }

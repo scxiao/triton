@@ -61,6 +61,7 @@ void Session::activate() {
 void Session::deactivate() {
   profiler->flush();
   profiler->unregisterData(data.get());
+  data->clear();
 }
 
 void Session::finalize(OutputFormat outputFormat) {
@@ -80,34 +81,50 @@ std::unique_ptr<Session> SessionManager::makeSession(
 }
 
 void SessionManager::activateSession(size_t sessionId) {
-  std::unique_lock<std::shared_mutex> lock(mutex);
+  std::lock_guard<std::mutex> lock(mutex);
   activateSessionImpl(sessionId);
 }
 
+void SessionManager::activateAllSessions() {
+  std::lock_guard<std::mutex> lock(mutex);
+  for (auto iter : sessionActive) {
+    activateSessionImpl(iter.first);
+  }
+}
+
 void SessionManager::deactivateSession(size_t sessionId) {
-  std::unique_lock<std::shared_mutex> lock(mutex);
+  std::lock_guard<std::mutex> lock(mutex);
   deActivateSessionImpl(sessionId);
+}
+
+void SessionManager::deactivateAllSessions() {
+  std::lock_guard<std::mutex> lock(mutex);
+  for (auto iter : sessionActive) {
+    deActivateSessionImpl(iter.first);
+  }
 }
 
 void SessionManager::activateSessionImpl(size_t sessionId) {
   throwIfSessionNotInitialized(sessions, sessionId);
-  if (activeSessions[sessionId])
+  if (sessionActive[sessionId])
     return;
-  activeSessions[sessionId] = true;
+  sessionActive[sessionId] = true;
   sessions[sessionId]->activate();
   registerInterface<ScopeInterface>(sessionId, scopeInterfaceCounts);
   registerInterface<OpInterface>(sessionId, opInterfaceCounts);
+  registerInterface<ContextSource>(sessionId, contextSourceCounts);
 }
 
 void SessionManager::deActivateSessionImpl(size_t sessionId) {
   throwIfSessionNotInitialized(sessions, sessionId);
-  if (!activeSessions[sessionId]) {
+  if (!sessionActive[sessionId]) {
     return;
   }
-  activeSessions[sessionId] = false;
+  sessionActive[sessionId] = false;
   sessions[sessionId]->deactivate();
   unregisterInterface<ScopeInterface>(sessionId, scopeInterfaceCounts);
   unregisterInterface<OpInterface>(sessionId, opInterfaceCounts);
+  unregisterInterface<ContextSource>(sessionId, contextSourceCounts);
 }
 
 void SessionManager::removeSession(size_t sessionId) {
@@ -116,6 +133,7 @@ void SessionManager::removeSession(size_t sessionId) {
   }
   auto path = sessions[sessionId]->path;
   sessionPaths.erase(path);
+  sessionActive.erase(sessionId);
   sessions.erase(sessionId);
 }
 
@@ -123,7 +141,7 @@ size_t SessionManager::addSession(const std::string &path,
                                   const std::string &profilerName,
                                   const std::string &contextSourceName,
                                   const std::string &dataName) {
-  std::unique_lock<std::shared_mutex> lock(mutex);
+  std::lock_guard<std::mutex> lock(mutex);
   if (hasSession(path)) {
     auto sessionId = getSessionId(path);
     activateSessionImpl(sessionId);
@@ -138,7 +156,7 @@ size_t SessionManager::addSession(const std::string &path,
 
 void SessionManager::finalizeSession(size_t sessionId,
                                      OutputFormat outputFormat) {
-  std::unique_lock<std::shared_mutex> lock(mutex);
+  std::lock_guard<std::mutex> lock(mutex);
   if (!hasSession(sessionId)) {
     return;
   }
@@ -148,7 +166,7 @@ void SessionManager::finalizeSession(size_t sessionId,
 }
 
 void SessionManager::finalizeAllSessions(OutputFormat outputFormat) {
-  std::unique_lock<std::shared_mutex> lock(mutex);
+  std::lock_guard<std::mutex> lock(mutex);
   auto sessionIds = std::vector<size_t>{};
   for (auto &[sessionId, session] : sessions) {
     deActivateSessionImpl(sessionId);
@@ -161,7 +179,7 @@ void SessionManager::finalizeAllSessions(OutputFormat outputFormat) {
 }
 
 void SessionManager::enterScope(const Scope &scope) {
-  std::shared_lock<std::shared_mutex> lock(mutex);
+  std::lock_guard<std::mutex> lock(mutex);
   for (auto iter : scopeInterfaceCounts) {
     auto [scopeInterface, count] = iter;
     if (count > 0) {
@@ -171,7 +189,7 @@ void SessionManager::enterScope(const Scope &scope) {
 }
 
 void SessionManager::exitScope(const Scope &scope) {
-  std::shared_lock<std::shared_mutex> lock(mutex);
+  std::lock_guard<std::mutex> lock(mutex);
   for (auto iter : scopeInterfaceCounts) {
     auto [scopeInterface, count] = iter;
     if (count > 0) {
@@ -181,7 +199,7 @@ void SessionManager::exitScope(const Scope &scope) {
 }
 
 void SessionManager::enterOp(const Scope &scope) {
-  std::shared_lock<std::shared_mutex> lock(mutex);
+  std::lock_guard<std::mutex> lock(mutex);
   for (auto iter : opInterfaceCounts) {
     auto [opInterface, count] = iter;
     if (count > 0) {
@@ -191,7 +209,7 @@ void SessionManager::enterOp(const Scope &scope) {
 }
 
 void SessionManager::exitOp(const Scope &scope) {
-  std::shared_lock<std::shared_mutex> lock(mutex);
+  std::lock_guard<std::mutex> lock(mutex);
   for (auto iter : opInterfaceCounts) {
     auto [opInterface, count] = iter;
     if (count > 0) {
@@ -201,12 +219,21 @@ void SessionManager::exitOp(const Scope &scope) {
 }
 
 void SessionManager::addMetrics(
-    size_t scopeId, const std::map<std::string, MetricValueType> &metrics,
-    bool aggregable) {
-  std::shared_lock<std::shared_mutex> lock(mutex);
-  for (auto [sessionId, active] : activeSessions) {
+    size_t scopeId, const std::map<std::string, MetricValueType> &metrics) {
+  std::lock_guard<std::mutex> lock(mutex);
+  for (auto [sessionId, active] : sessionActive) {
     if (active) {
-      sessions[sessionId]->data->addMetrics(scopeId, metrics, aggregable);
+      sessions[sessionId]->data->addMetrics(scopeId, metrics);
+    }
+  }
+}
+
+void SessionManager::setState(std::optional<Context> context) {
+  std::lock_guard<std::mutex> lock(mutex);
+  for (auto iter : contextSourceCounts) {
+    auto [contextSource, count] = iter;
+    if (count > 0) {
+      contextSource->setState(context);
     }
   }
 }

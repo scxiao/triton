@@ -3,7 +3,7 @@
 
 include "mlir/Pass/PassBase.td"
 
-def TritonAMDGPUStreamPipelineV2 : Pass<"tritonamdgpu-stream-pipeline-v2", "mlir::ModuleOp"> {
+def TritonAMDGPUStreamPipeline : Pass<"tritonamdgpu-stream-pipeline", "mlir::ModuleOp"> {
   let summary = "pipeline";
 
   let description = [{
@@ -11,14 +11,17 @@ def TritonAMDGPUStreamPipelineV2 : Pass<"tritonamdgpu-stream-pipeline-v2", "mlir
     tile
   }];
 
-  let constructor = "mlir::createTritonAMDGPUStreamPipelineV2Pass()";
+  let constructor = "mlir::createTritonAMDGPUStreamPipelinePass()";
 
-  let dependentDialects = [];
+  let dependentDialects = ["mlir::triton::amdgpu::TritonAMDGPUDialect"];
 
   let options = [
     Option<"numStages", "num_stages",
            "int32_t", /*default*/"2",
-           "Number of Pipeline stages">
+           "Number of Pipeline stages">,
+    Option<"prefetch", "prefetch",
+           "int32_t", /*default*/"0",
+           "Enable prefetch from shared memory">
   ];
 }
 
@@ -114,11 +117,32 @@ def TritonAMDGPUReorderInstructions: Pass<"tritonamdgpu-reorder-instructions", "
 def TritonAMDGPUConvertToBufferOps : Pass<"tritonamdgpu-convert-buffer-ops", "mlir::ModuleOp"> {
   let summary = "Convert memory operations to buffer operations";
 
-  let description = "This pass converts memory operations (e.g., tt.load/tt.store) to  amdgpu buffer operations, if possible";
+  let description = "This pass converts memory and atomic operations (e.g., tt.load/tt.store/tt.atomic_rmw) to  amdgpu buffer operations, if possible";
 
   let constructor = "mlir::createTritonAMDGPUConvertToBufferOpsPass()";
 
   let dependentDialects = ["mlir::triton::amdgpu::TritonAMDGPUDialect"];
+
+  let options = [
+    Option<"archGenerationName", "arch-generation-name",
+           "std::string", /*default=*/"std::string{}",
+           "GFX generation name of target device.">,
+  ];
+}
+
+def TritonAMDGPUBlockPingpong: Pass<"tritonamdgpu-block-pingpong", "mlir::ModuleOp"> {
+  let summary = "Interleaving instructions from two warps on the same SIMD to better utilize matrix core";
+
+  let description = [{
+    This pass reorder instructions to interleave instructions from two warps on the same SIMD unit.
+    We call this a ping-pong scheduling pattern, where two warps run concurrently in the synchronized fashion
+    This block ping-pong pattern could be beneficial under few conditions including
+    occupancy and number of warps.
+  }];
+
+  let constructor = "mlir::createTritonAMDGPUBlockPingpongPass()";
+
+  let dependentDialects = ["mlir::ROCDL::ROCDLDialect, mlir::triton::amdgpu::TritonAMDGPUDialect"];
 }
 
 #endif

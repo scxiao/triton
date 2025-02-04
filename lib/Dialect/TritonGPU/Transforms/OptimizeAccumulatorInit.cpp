@@ -3,6 +3,7 @@
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
+#include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
 
 namespace mlir {
 namespace triton {
@@ -38,13 +39,7 @@ void setUseAccFlag(Operation *op, Value useAcc) {
 }
 
 bool isConstantZeroTensor(Value v) {
-  auto constOp = v.getDefiningOp<arith::ConstantOp>();
-  if (!constOp)
-    return false;
-  auto splat = mlir::dyn_cast<SplatElementsAttr>(constOp.getValue());
-  if (!splat)
-    return false;
-  return splat.getSplatValue<FloatAttr>().getValue().convertToFloat() == 0.0f;
+  return (matchPattern(v, m_Zero()) || matchPattern(v, m_AnyZeroFloat()));
 }
 
 std::optional<std::pair<Operation *, int>> findZeroInitOp(Value accUse,
@@ -65,6 +60,8 @@ std::optional<std::pair<Operation *, int>> findZeroInitOp(Value accUse,
     return std::nullopt;
   }
   if (auto selOp = dyn_cast<arith::SelectOp>(defOp)) {
+    if (!selOp.getCondition().getType().isInteger(1))
+      return std::nullopt;
     if (isConstantZeroTensor(selOp.getTrueValue()) ||
         isConstantZeroTensor(selOp.getFalseValue())) {
       return std::make_pair(selOp, 0);

@@ -1,8 +1,9 @@
-#ifndef TRITON_CONVERSION_TRITONGPU_TO_LLVM_TARGETINFOAMD_H
-#define TRITON_CONVERSION_TRITONGPU_TO_LLVM_TARGETINFOAMD_H
+#ifndef TRITON_THIRD_PARTY_AMD_LIB_TRITONAMDGPUTOLLVM_TARGETINFO_H_
+#define TRITON_THIRD_PARTY_AMD_LIB_TRITONAMDGPUTOLLVM_TARGETINFO_H_
 
 #include "TritonAMDGPUToLLVM/TargetUtils.h"
 #include "triton/Conversion/TritonGPUToLLVM/TargetInfoBase.h"
+#include "llvm/TargetParser/TargetParser.h"
 #include <string>
 
 namespace mlir::triton::AMD {
@@ -11,6 +12,8 @@ public:
   explicit TargetInfo(std::string arch) : arch(std::move(arch)) {}
 
   ISAFamily getISAFamily() const { return deduceISAFamily(arch); }
+
+  llvm::AMDGPU::GPUKind getGPUKind() const;
 
   int getSharedMemorySize() const;
 
@@ -27,6 +30,11 @@ public:
   Value loadDShared(RewriterBase &rewriter, Location loc, Value ptr,
                     std::optional<Value> ctaId, Type elemTy,
                     Value pred) const override;
+
+  bool canUseStMatrix(RankedTensorType tensorTy, ArrayRef<unsigned> repShape,
+                      ArrayRef<unsigned> paddedRepShape,
+                      ArrayRef<unsigned> order,
+                      int swizzleByteSize) const override;
   void storeMatrixShared(RewriterBase &rewriter, Location loc, Value ptr,
                          Value val) const override;
 
@@ -68,4 +76,4 @@ private:
 };
 } // namespace mlir::triton::AMD
 
-#endif // TRITON_CONVERSION_TRITONGPU_TO_LLVM_TARGETINFOAMD_H
+#endif // TRITON_THIRD_PARTY_AMD_LIB_TRITONAMDGPUTOLLVM_TARGETINFO_H_

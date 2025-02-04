@@ -1,5 +1,4 @@
 #include "Proton.h"
-#include "Driver/GPU/CudaApi.h"
 
 #include <map>
 #include <stdexcept>
@@ -27,9 +26,15 @@ void initProton(pybind11::module &&m) {
     SessionManager::instance().activateSession(sessionId);
   });
 
+  m.def("activate_all",
+        []() { SessionManager::instance().activateAllSessions(); });
+
   m.def("deactivate", [](size_t sessionId) {
     SessionManager::instance().deactivateSession(sessionId);
   });
+
+  m.def("deactivate_all",
+        []() { SessionManager::instance().deactivateAllSessions(); });
 
   m.def("finalize", [](size_t sessionId, const std::string &outputFormat) {
     auto outputFormatEnum = parseOutputFormat(outputFormat);
@@ -59,18 +64,17 @@ void initProton(pybind11::module &&m) {
     SessionManager::instance().exitOp(Scope(scopeId, name));
   });
 
+  m.def("enter_state", [](const std::string &state) {
+    SessionManager::instance().setState(state);
+  });
+
+  m.def("exit_state",
+        []() { SessionManager::instance().setState(std::nullopt); });
+
   m.def("add_metrics",
         [](size_t scopeId,
            const std::map<std::string, MetricValueType> &metrics) {
-          SessionManager::instance().addMetrics(scopeId, metrics,
-                                                /*aggregable=*/true);
-        });
-
-  m.def("set_properties",
-        [](size_t scopeId,
-           const std::map<std::string, MetricValueType> &metrics) {
-          SessionManager::instance().addMetrics(scopeId, metrics,
-                                                /*aggregable=*/false);
+          SessionManager::instance().addMetrics(scopeId, metrics);
         });
 
   pybind11::bind_map<std::map<std::string, MetricValueType>>(m, "MetricMap");

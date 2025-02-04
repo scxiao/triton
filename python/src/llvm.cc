@@ -23,6 +23,8 @@
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Transforms/IPO/AlwaysInliner.h"
 #include "llvm/Transforms/InstCombine/InstCombine.h"
+#include "llvm/Transforms/Instrumentation/AddressSanitizer.h"
+#include "llvm/Transforms/Instrumentation/AddressSanitizerOptions.h"
 #include <csignal>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
@@ -130,8 +132,6 @@ std::string translateLLVMIRToASM(llvm::Module &module,
   {
     llvm::raw_string_ostream stream(result);
     llvm::buffer_ostream pstream(stream);
-    for (llvm::Function &f : module.functions())
-      f.addFnAttr(llvm::Attribute::AlwaysInline);
     llvm::legacy::PassManager pass;
     // emit
     auto fileType = isObject ? llvm::CodeGenFileType::ObjectFile
@@ -210,7 +210,14 @@ void init_triton_llvm(py::module &&m) {
       .def("set_calling_conv", &llvm::Function::setCallingConv)
       .def("add_fn_attr", [](llvm::Function *fn, std::string &name,
                              std::string &val) { fn->addFnAttr(name, val); })
-
+      .def("add_fn_asan_attr",
+           [](llvm::Function *fn) {
+             fn->addFnAttr(llvm::Attribute::SanitizeAddress);
+           })
+      .def("add_fn_target_feature",
+           [](llvm::Function *fn, std::string &val) {
+             fn->addFnAttr("target-features", val);
+           })
       // Sets the nvvm.maxreg property on the given function.
       .def("set_nvvm_maxnreg",
            [](llvm::Function *fn, int maxnreg) {
@@ -321,8 +328,22 @@ void init_triton_llvm(py::module &&m) {
     PassBuilder pb(nullptr /*targetMachine*/, tuningOptions, std::nullopt,
                    instrCbPtr);
 
-    std::string pluginFile =
-        mlir::triton::tools::getStrEnv("LLVM_PASS_PLUGIN_PATH");
+        // We don't pass the targetMachine to the LLVM-IR pass builder, unless
+        // `arch` is specified.
+        //
+        // Don't set target machine in LLVM pass builder when using LLVM IR
+        // level plugins. LLVM IR level plugin passes typically want to insert
+        // calls to externally generated code (i.e. precompile a Cuda/Hip kernel
+        // with Clang and then insert a call to it within an instrumentation
+        // pass) setting the targetMachine value here can can cause a mismatch
+        // in the target machine between the MLIR and Clang generated kernels
+        // and break the lowering of some target specific intrinsics.
+        std::unique_ptr<TargetMachine> targetMachine = nullptr;
+        if (!arch.empty() && pluginFile.empty())
+          targetMachine =
+              createTargetMachine(mod, arch, enable_fp_fusion, features);
+        PassBuilder pb(/*targetMachine=*/targetMachine.get(), tuningOptions,
+                       std::nullopt, instrCbPtr);
 
     if (!pluginFile.empty()) {
       // TODO: Add some logging here that we inserted a pass into the LLVM
@@ -343,18 +364,31 @@ void init_triton_llvm(py::module &&m) {
     pb.registerLoopAnalyses(lam);
     pb.crossRegisterProxies(lam, fam, cgam, mam);
 
-    ModulePassManager mpm;
-    pb.registerVectorizerStartEPCallback(
-        [&](llvm::FunctionPassManager &fpm, llvm::OptimizationLevel level) {
-          // Triton generates large structure of scalars which may pessimise
-          // optimizations, we run a pass to break up phi of struct to make
-          // sure all the struct are removed for the following passes.
-          fpm.addPass(BreakStructPhiNodesPass());
-          fpm.addPass(InstCombinePass());
-        });
-    mpm.addPass(pb.buildPerModuleDefaultPipeline(opt));
-    mpm.run(*mod, mam);
-  });
+        ModulePassManager mpm;
+        pb.registerVectorizerStartEPCallback(
+            [&](llvm::FunctionPassManager &fpm, llvm::OptimizationLevel level) {
+              // Triton generates large structure of scalars which may pessimise
+              // optimizations, we run a pass to break up phi of struct to make
+              // sure all the struct are removed for the following passes.
+              fpm.addPass(BreakStructPhiNodesPass());
+              fpm.addPass(InstCombinePass());
+            });
+        bool enableAddressSanitizer =
+            mlir::triton::tools::getBoolEnv("TRITON_ENABLE_ASAN");
+        if (enableAddressSanitizer) {
+          AddressSanitizerOptions Opts;
+          mpm.addPass(AddressSanitizerPass(Opts));
+        }
+        mpm.addPass(pb.buildPerModuleDefaultPipeline(opt));
+        mpm.run(*mod, mam);
+      },
+      // Mandatory parameters
+      py::arg("mod"), py::arg("opt"),
+      // If we want to specify the target machine, we require additional
+      // (optional) parameters
+      py::arg("arch") = "", py::arg("features") = "",
+      py::arg("flags") = std::vector<std::string>{},
+      py::arg("enable_fp_fusion") = false);
 
   m.def(
       "translate_to_asm",

@@ -2,12 +2,13 @@
 #include "mlir/Support/LLVM.h"
 #include "triton/Conversion/TritonGPUToLLVM/PatternTritonGPUOpToLLVM.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
+#include "triton/Dialect/Triton/IR/Dialect.h"
 
 using namespace mlir;
 using namespace mlir::triton;
 
-using ::mlir::LLVM::delinearize;
 using ::mlir::LLVM::linearize;
+using ::mlir::triton::gpu::DistributedEncodingTrait;
 using ::mlir::triton::gpu::getOrder;
 using ::mlir::triton::gpu::getThreadOrder;
 using ::mlir::triton::gpu::getTotalElemsPerThread;
@@ -127,7 +128,7 @@ private:
         emitOffsetForLayout(helper.getSrcLayout(), operandType);
 
     // Thread X might hold the same input value in two registers.  Get the
-    // indices in `offsets` that hold unique values, and only accumualte over
+    // indices in `offsets` that hold unique values, and only accumulate over
     // those.
     llvm::MapVector<ArrayRef<unsigned>, int> uniqueOffsets;
     for (int i = 0; i < offsets.size(); ++i) {
@@ -159,9 +160,6 @@ private:
                                          numLaneToReduce, interleave);
     if (success)
       return;
-
-    auto mod = op->getParentOfType<ModuleOp>();
-    unsigned iWarpSize = triton::gpu::TritonGPUDialect::getThreadsPerWarp(mod);
 
     for (unsigned N = numLaneToReduce / 2; N > 0; N >>= 1) {
       SmallVector<Value> shfl(acc.size());
@@ -218,34 +216,6 @@ private:
     rewriter.replaceOp(op, results);
   }
 
-  SmallVector<Value>
-  getMultiDimWarpId(ReduceOpHelper &helper, Value &warpId, Location &loc,
-                    ConversionPatternRewriter &rewriter) const {
-    auto srcLayout = helper.getSrcLayout();
-    auto srcShape = helper.getSrcShape();
-    auto order = triton::gpu::getWarpOrder(srcLayout);
-    SmallVector<Value> multiDimWarpId;
-
-    // 2x2 warps with slice dim = 0, warpId = 2 ends up writing at the same
-    // address as warpId = 0 since the warpsPerCTA is [1, 2], need to figure out
-    // a way to properly delinearize warpId in the slice case
-    if (auto sliceLayout = mlir::dyn_cast<SliceEncodingAttr>(srcLayout)) {
-      auto parentLayout = sliceLayout.getParent();
-      auto parentWarpsPerCTA = triton::gpu::getWarpsPerCTA(parentLayout);
-      auto parentOrder = triton::gpu::getWarpOrder(parentLayout);
-      multiDimWarpId =
-          delinearize(rewriter, loc, warpId, parentWarpsPerCTA, parentOrder);
-      multiDimWarpId.erase(multiDimWarpId.begin() + sliceLayout.getDim());
-    } else {
-      SmallVector<unsigned> warpsPerCTA =
-          triton::gpu::getWarpsPerCTA(srcLayout);
-      warpsPerCTA[helper.getAxis()] = triton::gpu::getWarpsPerCTAWithUniqueData(
-          srcLayout, srcShape)[helper.getAxis()];
-      multiDimWarpId = delinearize(rewriter, loc, warpId, warpsPerCTA, order);
-    }
-    return multiDimWarpId;
-  }
-
   void storeWarpReduceToSharedMemory(
       ReduceOpHelper &helper,
       std::map<SmallVector<unsigned>, SmallVector<Value>> &accs,
@@ -255,25 +225,30 @@ private:
     triton::ReduceOp op = helper.getOperation();
     Location loc = op.getLoc();
     Value threadId = getThreadId(rewriter, loc);
-    auto srcLayout = helper.getSrcLayout();
-    Value warpSize = i32_val(triton::gpu::getWarpSize(srcLayout));
+    auto srcLayout =
+        mlir::cast<DistributedEncodingTrait>(helper.getSrcLayout());
+    auto mod = op.getOperation()->getParentOfType<ModuleOp>();
+    Value warpSize =
+        i32_val(triton::gpu::TritonGPUDialect::getThreadsPerWarp(mod));
     Value warpId = udiv(threadId, warpSize);
     Value laneId = urem(threadId, warpSize);
-    auto srcShape = helper.getSrcShape();
     unsigned axis = op.getAxis();
     auto smemShape = helper.getScratchRepShape();
 
-    auto threadsPerWarp =
-        triton::gpu::getThreadsPerWarpWithUniqueData(srcLayout, srcShape);
-    auto order = getThreadOrder(srcLayout);
-    SmallVector<Value> multiDimLaneId =
-        delinearize(rewriter, loc, laneId, threadsPerWarp, order);
-    Value laneIdAxis = multiDimLaneId[axis];
-    Value zero = i32_val(0);
-    Value laneZero = icmp_eq(laneIdAxis, zero);
+    // Lezcano: We should move all the shared memory logic to use LLs natively
+    auto srcShape = helper.getSrcShape();
+    auto kLane = rewriter.getStringAttr("lane");
+    auto [multiDimLaneId, isRepresentativeLane] =
+        delinearize(rewriter, loc, srcLayout, srcShape, kLane, laneId);
+    auto kWarp = rewriter.getStringAttr("warp");
+    auto [multiDimWarpId, isRepresentativeWarp] =
+        delinearize(rewriter, loc, srcLayout, srcShape, kWarp, warpId);
 
-    SmallVector<Value> multiDimWarpId =
-        getMultiDimWarpId(helper, warpId, loc, rewriter);
+    Value laneIdAxis = multiDimLaneId[axis];
+    Value laneZero = icmp_eq(laneIdAxis, i32_val(0));
+    Value write =
+        and_(and_(isRepresentativeLane, isRepresentativeWarp), laneZero);
+
     Value warpIdAxis = multiDimWarpId[axis];
 
     auto smemOrder = helper.getOrderWithAxisAtBeginning();
@@ -289,7 +264,7 @@ private:
         auto elemTy = getElementType(op, i);
         Value writePtr =
             gep(smemBases[i].getType(), elemTy, smemBases[i], writeOffset);
-        targetInfo.storeShared(rewriter, loc, writePtr, acc[i], laneZero);
+        targetInfo.storeShared(rewriter, loc, writePtr, acc[i], write);
       }
     }
   }
@@ -300,21 +275,21 @@ private:
                                    SmallVector<Value> &smemBases,
                                    ConversionPatternRewriter &rewriter) const {
     triton::ReduceOp op = helper.getOperation();
-    auto srcLayout = helper.getSrcLayout();
     auto smemShape = helper.getScratchRepShape();
     unsigned elems = product<unsigned>(smemShape);
     unsigned sizeInterWarps = helper.getInterWarpSizeWithUniqueData();
     Location loc = op.getLoc();
 
+    auto mod = op.getOperation()->getParentOfType<ModuleOp>();
+    int numLanes = triton::gpu::TritonGPUDialect::getThreadsPerWarp(mod);
+    int numWarps = triton::gpu::TritonGPUDialect::getNumWarps(mod);
+    int numThreads = numLanes * numWarps;
+
     Value threadId = getThreadId(rewriter, loc);
-    Value warpSize = i32_val(triton::gpu::getWarpSize(srcLayout));
+    Value warpSize = i32_val(numLanes);
     Value laneId = urem(threadId, warpSize);
     Value zero = i32_val(0);
 
-    auto mod = op.getOperation()->getParentOfType<ModuleOp>();
-    unsigned numThreads =
-        product<unsigned>(triton::gpu::getWarpsPerCTA(srcLayout)) *
-        triton::gpu::TritonGPUDialect::getThreadsPerWarp(mod);
     unsigned elemsPerThread = std::max<unsigned>(elems / numThreads, 1);
     Value threadIsNeeded = icmp_slt(threadId, i32_val(elems));
     Value readOffset = threadId;
@@ -375,7 +350,7 @@ private:
         auto resultIndices = emitIndices(loc, rewriter, targetInfo,
                                          resultLayout, resultTy, true);
         auto resultShape = resultTy.getShape();
-        auto resultCTATile = getShapePerCTATile(resultLayout, resultShape);
+        auto resultCTATile = getShapePerCTATile(resultLayout);
         assert(resultIndices.size() == resultElems);
 
         SmallVector<Value> resultVals(resultElems);

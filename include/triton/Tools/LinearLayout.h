@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "mlir/IR/BuiltinAttributes.h"
+#include "llvm/ADT/Hashing.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SetVector.h"
@@ -342,9 +343,12 @@ public:
                                  StringAttr outDim);
 
   // Creates a 1D -> 1D layout that maps every input value to 0, i.e. L(x) = 0
-  // for x in [0, size).
-  static LinearLayout zeros1D(int32_t size, StringAttr inDim,
-                              StringAttr outDim);
+  // for x in [0, size). By default this creates a surjective layout where
+  // `outDim` has size 1 (the only element is 0). If `outDimSize` is specified
+  // to be greater than 1, then this creates a non-surjective layout with a
+  // specific size for `outDim`.
+  static LinearLayout zeros1D(int32_t size, StringAttr inDim, StringAttr outDim,
+                              int32_t outDimSize = 1);
 
   // Creates a LinearLayout from a list of bases.  These are interpreted
   // according to the rules written for the member variable `bases`.
@@ -413,6 +417,10 @@ public:
 
   bool isSurjective() const { return surjective; }
 
+  bool isInvertible() const {
+    return surjective && getTotalInDimSize() == getTotalOutDimSize();
+  }
+
   const BasesT &getBases() const { return bases; }
 
   // Get the pos'th basis vector for the inDim -> outDim mapping.
@@ -432,6 +440,7 @@ public:
   // (e.g. by reshaping) then the order doesn't really affect anything.
   auto getInDimNames() const { return llvm::make_first_range(bases); }
   auto getOutDimNames() const { return llvm::make_first_range(outDims); }
+  auto getOutDimSizes() const { return llvm::make_second_range(outDims); }
 
   // Gets the position that this outDim occupies in getOutDimNames().  Asserts
   // if the dim is not present.
@@ -528,6 +537,19 @@ public:
     return reshapeOuts({{*getOutDimNames().begin(), getTotalOutDimSize()}});
   }
 
+  // Concatenates two layouts by their input dimensions. The layouts must have
+  // the same output dimensions and sizes and different input dimensions. The
+  // input dimensions of this layout are placed before those of 'other'. This
+  // can be thought of as the opposite of `sublayout`, which slices a layout
+  // from a larger one.
+  [[nodiscard]] LinearLayout concatIns(const LinearLayout &other) const;
+  // Concatenates two layouts by their output dimensions. The layouts must have
+  // the same input dimensions and sizes and different output dimensions. The
+  // output dimensions of this layout are placed before those of 'other'. This
+  // can be thought of as the opposite of `sublayout`, which slices a layout
+  // from a larger one.
+  [[nodiscard]] LinearLayout concatOuts(const LinearLayout &other) const;
+
   // Creates a new layout which, roughly speaking, is equivalent to one where
   // every element of the `outer` layout is replaced by a full instance of the
   // `inner` layout.
@@ -605,11 +627,6 @@ public:
   bool sublayoutIsZero(ArrayRef<StringAttr> inDimNames,
                        ArrayRef<StringAttr> outDimNames) const;
 
-  // Is the sublayout defined from dimNames to dimNames the identity?
-  // In particular, is the input and  output size in these dimensions
-  // the same, and are the bases the identity?
-  bool squareSublayoutIsIdentity(ArrayRef<StringAttr> dimNames) const;
-
   // Computes and returns L(x, y, z).
   //
   // If you want to apply the layout to mlir Values instead of integers, that
@@ -671,6 +688,13 @@ public:
   // don't place any guarantees on the choices made by this function.
   [[nodiscard]] LinearLayout invertAndCompose(const LinearLayout &outer) const;
 
+  // Get the layout that is the inverse of this layout.
+  [[nodiscard]] LinearLayout invert() const;
+  // Compute and return a psueodinverse of this layout. This is a layout such
+  // that `B = A.psuedoinvert()` implies that `A(B(x)) = I`. If `A` is
+  // invertible, then this returns `A^-1`.
+  [[nodiscard]] LinearLayout pseudoinvert() const;
+
   // For each in-dim, returns a bitmask of the "free variables" in the layout
   // function.
   //
@@ -679,6 +703,12 @@ public:
   // (i.e. every input bit affects the output).
   llvm::MapVector<StringAttr, int32_t> getFreeVariableMasks() const;
 
+  // Take the current linear layout and remove all zero bases for the provided
+  // dimension and return the resulting layout. This is useful for deriving a
+  // layout that returns just the unique output values when varying a given
+  // input dimension that has broadcasting.
+  [[nodiscard]] LinearLayout removeZeroBasesAlongDim(StringAttr stripDim) const;
+
   std::string toString() const;
 
   friend bool operator==(LinearLayout lhs, LinearLayout rhs);
@@ -686,6 +716,7 @@ public:
     return !(lhs == rhs);
   }
   bool equalIgnoringOutDimSizes(const LinearLayout &other) const;
+  friend size_t hash_value(const LinearLayout &layout);
 
 private:
   // Factory function that gracefully fails rather than asserts if the layout is
@@ -716,4 +747,4 @@ inline std::ostream &operator<<(std::ostream &os, const LinearLayout &layout) {
 
 } // namespace mlir::triton
 
-#endif
+#endif // TRITON_TOOLS_LINEARLAYOUT_H

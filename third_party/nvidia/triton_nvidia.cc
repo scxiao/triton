@@ -1,4 +1,4 @@
-﻿#include "Dialect/NVGPU/IR/Dialect.h"
+#include "Dialect/NVGPU/IR/Dialect.h"
 #include "NVGPUToLLVM/NVGPUToLLVMPass.h"
 #include "TritonNVIDIAGPUToLLVM/Passes.h"
 #include "cublas_instance.h"
@@ -23,9 +23,6 @@ void init_triton_nvidia_passes_ttgpuir(py::module &&m) {
           pm.addPass(mlir::triton::createConvertTritonGPUToLLVMPass(
               capability, ptxVersion));
         });
-  m.def("add_decompose_unsupported_conversions", [](mlir::PassManager &pm) {
-    pm.addPass(NVIDIA::createDecomposeUnsupportedConversionsPass());
-  });
 }
 
 void init_triton_nvidia_passes_ttnvgpuir(py::module &&m) {
