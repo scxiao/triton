@@ -262,7 +262,6 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
         std::max(8u, valueElemTy.getIntOrFloatBitWidth());
     const size_t valueElemNBytes = valueElemNBits / 8;
     const int numVecs = numElems / vec;
-    int64_t ptrAlignmentBytes = getPtrAlignment(ptr) * valueElemNBytes;
 
     auto cacheMod = op.getCache();
     SmallVector<Value> loadedVals;
@@ -296,7 +295,7 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
       }
 
       Value loadVal = llLoad(rewriter, loc, ptr, vecTy, pred, falseVal,
-                             ptrAlignmentBytes, cacheMod);
+                             cacheMod);
       for (size_t ii = 0; ii < vec; ++ii) {
         Value vecIdx = createIndexAttrConstant(
             rewriter, loc, this->getTypeConverter()->getIndexType(), ii);
