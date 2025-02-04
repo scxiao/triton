@@ -1604,6 +1604,7 @@ Attribute AMDMfmaEncodingAttr::parse(AsmParser &parser, Type type) {
   unsigned versionMinor = 0;
   SmallVector<unsigned> warpsPerCTA;
   SmallVector<unsigned> instrShape;
+  unsigned kDim = 0;
   bool isTransposed;
   std::optional<SmallVector<unsigned>> CTAsPerCGA;
   std::optional<SmallVector<unsigned>> CTASplitNum;
@@ -1624,6 +1625,10 @@ Attribute AMDMfmaEncodingAttr::parse(AsmParser &parser, Type type) {
     }
     if (attr.getName() == "instrShape") {
       if (parseIntArrayAttr(parser, attr, instrShape, "instrShape").failed())
+        return {};
+    }
+    if (attr.getName() == "kDim") {
+      if (parseUInt(parser, attr, kDim, "kDim").failed())
         return {};
     }
     if (attr.getName() == "isTransposed") {
@@ -1654,7 +1659,7 @@ Attribute AMDMfmaEncodingAttr::parse(AsmParser &parser, Type type) {
 
   return parser.getChecked<AMDMfmaEncodingAttr>(
       parser.getContext(), versionMajor, versionMinor, warpsPerCTA,
-      instrShape[0], instrShape[1], instrShape[2], isTransposed, *CTALayout);
+      instrShape[0], instrShape[1], kDim, isTransposed, *CTALayout);
 }
 
 void AMDMfmaEncodingAttr::print(AsmPrinter &printer) const {
@@ -1663,6 +1668,7 @@ void AMDMfmaEncodingAttr::print(AsmPrinter &printer) const {
           << ", versionMinor = " << getVersionMinor()                    //
           << ", warpsPerCTA = [" << ArrayRef(getWarpsPerCTA()) << "]"    //
           << ", instrShape = [" << ArrayRef{getMDim(), getNDim()} << "]" //
+          << ", kDIM = " << getKDim()                                    //
           << ", isTransposed = " << getIsTransposed();
   maybePrintCTALayout(getContext(), printer, getCTALayout(),
                       /*rank=*/getWarpsPerCTA().size());
