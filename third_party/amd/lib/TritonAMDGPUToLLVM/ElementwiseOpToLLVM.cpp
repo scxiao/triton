@@ -484,10 +484,10 @@ static Value convertFp32ToBf16(Location loc,
   // https://github.com/cgmillette/composable_kernel/commit/24e75bef6aa5
   // It uses less VGPR and less number of instructions compared to the
   // previous implementation
-  SmallVector<StringRef> constraints0 = {"=s", "v", "v"};
+  SmallVector<StringRef> constraints0 = {"=v", "v", "v"};
   SmallVector<Value> vals0 = {v, v};
   Value isNan = buildGCNInstruction(loc, rewriter, "v_cmp_u_f32", constraints0,
-                                    vals0, i64_ty);
+                                    vals0, i1_ty);
 
   Value v16 = b.i32_val(16);
   Value v1 = b.i32_val(1);
@@ -496,19 +496,14 @@ static Value convertFp32ToBf16(Location loc,
   Value tmp = buildGCNInstruction(loc, rewriter, "v_bfe_u32", constraints1,
                                   vals1, i32_ty);
 
-  SmallVector<StringRef> constraints2 = {"=v", "v", "v", "v"};
   Value v7FFF = b.i32_val(0x7FFF);
-  SmallVector<Value> vals2 = {v, tmp, v7FFF};
-  Value tmp1 = buildGCNInstruction(loc, rewriter, "v_add3_u32", constraints2,
-                                   vals2, i32_ty);
+  Value s1 = b.add(as_int32, tmp);
+  Value s2 = b.add(s1, v7FFF);
 
-  SmallVector<StringRef> constraints3 = {"=v", "v", "v", "s"};
   Value vNan = b.i32_val(0x7FFF0000);
-  SmallVector<Value> vals3 = {tmp1, vNan, isNan};
-  Value cndMask = buildGCNInstruction(loc, rewriter, "v_cndmask_b32",
-                                      constraints3, vals3, i32_ty);
+  Value res = b.select(isNan, vNan, s2);
 
-  Value shifted = b.lshr(i32_ty, cndMask, v16);
+  Value shifted = b.lshr(i32_ty, res, v16);
   Value truncated = b.trunc(i16_ty, shifted);
   return b.bitcast(truncated, bf16_ty);
 }
