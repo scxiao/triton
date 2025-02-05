@@ -927,6 +927,7 @@ V [ 0,4,8...60   1,5...61     2,6...62     3,7...63    ]   [ 128,132...188  129,
     ArrayRefParameter<"unsigned">:$warpsPerCTA__,
     "unsigned":$MDim,
     "unsigned":$NDim,
+    "unsigned":$KDim,
     "bool":$isTransposed,
     "CTALayoutAttr":$CTALayout
   );

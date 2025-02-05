@@ -30,6 +30,18 @@ int getMfmaVersion(ISAFamily isaFamily) {
   return 0;
 }
 
+int getMfmaVersion(StringRef archGen) {
+  if (archGen.contains("gfx950"))
+    return 4;
+  if (archGen.contains("gfx94"))
+    return 3;
+  if (archGen.contains("gfx90A"))
+    return 2;
+  if (archGen.contains("gfx908"))
+    return 1;
+  return 0;
+}
+
 int getWmmaVersion(StringRef archGen) {
   if (archGen.contains("gfx11"))
     return 1;
@@ -101,7 +113,7 @@ warpsPerTileWMMA(Operation *dotOp, ArrayRef<int64_t> shape, int numWarps) {
 FailureOr<MfmaInsn> chooseMfmaInstruction(RankedTensorType cType,
                                           Type aElemType, Type bElemType,
                                           int inputKSize, int mfmaVersion,
-                                          int enforcedNonKDim) {
+                                          bool allowXF32, int enforcedNonKDim) {
   // number of matrix elements along k dim per one MFMA intruction
   unsigned kDim = 0;
 
@@ -128,8 +140,8 @@ FailureOr<MfmaInsn> chooseMfmaInstruction(RankedTensorType cType,
   if (mDim == 0 || nDim == 0)
     return failure();
 
-  auto maybeMfmaInsn =
-      MfmaInsn::selectMfma(mDim, nDim, aElemType, bElemType, mfmaVersion);
+  auto maybeMfmaInsn = MfmaInsn::selectMfma(mDim, nDim, inputKSize, aElemType,
+                                            bElemType, mfmaVersion, allowXF32);
   if (failed(maybeMfmaInsn))
     llvm::report_fatal_error("No match found in MFMA database\n");
 
@@ -146,9 +158,12 @@ FailureOr<MfmaInsn> chooseMfmaInstruction(RankedTensorType cType,
 FailureOr<MfmaInsn> chooseMfmaInstruction(tt::DotOp dot, int mfmaVersion,
                                           int nonKDim) {
   RankedTensorType aType = dot.getA().getType();
+  bool allowXF32 = dot.getInputPrecision() == InputPrecision::TF32 &&
+                   (mfmaVersion == 3 || mfmaVersion == 4);
   return chooseMfmaInstruction(dot.getC().getType(), aType.getElementType(),
                                dot.getB().getType().getElementType(),
-                               aType.getShape().back(), mfmaVersion, nonKDim);
+                               aType.getShape().back(), mfmaVersion, allowXF32,
+                               nonKDim);
 }
 
 FailureOr<MfmaInsn> chooseMfmaInstruction(tt::DotScaledOp dot, int mfmaVersion,
@@ -156,9 +171,10 @@ FailureOr<MfmaInsn> chooseMfmaInstruction(tt::DotScaledOp dot, int mfmaVersion,
   // For scaled dot, we handle it with fp16 or bf16 emulation for now.
   Builder b(dot.getContext());
   Type elemType = useFp16 ? b.getF16Type() : b.getBF16Type();
-  return chooseMfmaInstruction(
-      dot.getC().getType(), /*aElemType=*/elemType, /*bElemType=*/elemType,
-      dot.getLhs().getType().getShape().back(), mfmaVersion, nonKDim);
+  return chooseMfmaInstruction(dot.getC().getType(), /*aElemType=*/elemType,
+                               /*bElemType=*/elemType,
+                               dot.getLhs().getType().getShape().back(),
+                               mfmaVersion, /*allowXF32=*/false, nonKDim);
 }
 
 using OperandTypesVector = SmallVector<Type, 4>;
@@ -412,12 +428,12 @@ public:
     // store instructions, except for fp8 matmul kernels due to regression
     // TODO (lixun): investigate the regression and enable this feature again
     auto aElemTy = mfmaInstr.getElementTypeA();
-    bool isFP8 = aElemTy.isFloat8E5M2FNUZ() || aElemTy.isFloat8E4M3FNUZ();
+    bool isFP8 = llvm::isa<Float8E5M2FNUZType, Float8E4M3FNUZType>(aElemTy);
     bool isTransposed = isChainDot(dotOp) || !isFP8;
     mfmaEnc = ttg::AMDMfmaEncodingAttr::get(
         oldRetType.getContext(),
         /*versionMajor*/ mfmaVersion, /*versionMinor*/ 0, warpsPerTile,
-        /*instrShape*/ mDim, nDim, isTransposed, CTALayout);
+        /*instrShape*/ mDim, nDim, kDim, isTransposed, CTALayout);
 
     Type mfmaAccType;
     if (oldRetType.getElementType().isIntOrIndex())
@@ -484,7 +500,6 @@ public:
     Value dotOutput =
         convertAndCastTensor(rewriter, newDot, oldRetType.getEncoding(),
                              oldRetType.getElementType());
-
     rewriter.replaceOp(dotOp, dotOutput);
 
     return success();
@@ -584,7 +599,7 @@ public:
     // for global store instructions.
     auto mfmaEnc = ttg::AMDMfmaEncodingAttr::get(
         ctx, /*versionMajor=*/mfmaVersion, /*versionMinor=*/0, mfmaWarpsPerCTA,
-        /*instrShape=*/mDim, nDim, /*isTransposed=*/true, ctaLayout);
+        /*instrShape=*/mDim, nDim, kDim, /*isTransposed=*/true, ctaLayout);
 
     auto newRetType = RankedTensorType::get(
         oldRetType.getShape(), oldRetType.getElementType(), mfmaEnc);
@@ -885,12 +900,18 @@ public:
     ModuleOp m = getOperation();
 
     RewritePatternSet patterns(context);
+    StringRef arch(archGenerationName);
+    if (arch.contains("gfx950"))
+      patterns.add<::BlockedToMFMA, ::ScaledBlockedToMFMA>(
+          context, getMfmaVersion(archGenerationName), matrixInstructionSize,
+          kPack);
     switch (auto isaFamily = triton::AMD::deduceISAFamily(archGenerationName)) {
     case ISAFamily::CDNA1:
     case ISAFamily::CDNA2:
     case ISAFamily::CDNA3:
       patterns.add<::BlockedToMFMA, ::ScaledBlockedToMFMA>(
-          context, getMfmaVersion(isaFamily), matrixInstructionSize, kPack);
+          context, getMfmaVersion(archGenerationName), matrixInstructionSize,
+          kPack);
       break;
     case ISAFamily::RDNA3:
       patterns.add<::BlockedToWMMA>(context,
