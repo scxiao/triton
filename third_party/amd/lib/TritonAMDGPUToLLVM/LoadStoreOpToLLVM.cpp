@@ -454,7 +454,6 @@ struct StoreOpConversion : public ConvertOpToLLVMPattern<triton::StoreOp>,
       const size_t wordNElems = width / valueElemNBits;
       assert(wordNElems * nWords * numVecs == elemsPerThread);
 
-      SmallVector<std::pair<Value, std::string>> asmArgs;
       Value elem = valueElems[vecStart];
       Value ptr = ptrElems[vecStart];
 
