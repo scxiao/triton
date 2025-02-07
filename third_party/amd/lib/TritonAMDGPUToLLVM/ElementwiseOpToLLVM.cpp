@@ -495,10 +495,6 @@ static Value convertFp32ToBf16(Location loc,
   // It uses less VGPR and less number of instructions compared to the
   // previous implementation
   Value isNan = checkNan(loc, rewriter, v);
-  // SmallVector<StringRef> constraints0 = {"=v", "v", "v"};
-  // SmallVector<Value> vals0 = {v, v};
-  // Value isNan = buildGCNInstruction(loc, rewriter, "v_cmp_u_f32", constraints0,
-  //                                   vals0, i1_ty);
 
   Value v16 = b.i32_val(16);
   Value v1 = b.i32_val(1);
