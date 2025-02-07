@@ -445,6 +445,16 @@ static Value convertBf16ToFp32(Location loc,
   return b.bitcast(shifted, f32_ty);
 }
 
+static Value checkNan(Location loc, RewriterBase &rewriter, Value v) {
+  std::string intrinsic = "llvm.is.fpclass";
+  auto b = TritonLLVMOpBuilder(loc, rewriter);
+  // bit 0 indicates signaling nan 
+  Value sNan = b.i32_val(0);
+  return LLVM::createLLVMIntrinsicCallOp(rewriter, loc, intrinsic, i1_ty,
+                                        ValueRange{v, sNan})
+      ->getResult(0);
+}
+
 static Value buildGCNInstruction(Location loc, RewriterBase &rewritter,
                                  StringRef instrName,
                                  ArrayRef<StringRef> constraints,
@@ -484,10 +494,11 @@ static Value convertFp32ToBf16(Location loc,
   // https://github.com/cgmillette/composable_kernel/commit/24e75bef6aa5
   // It uses less VGPR and less number of instructions compared to the
   // previous implementation
-  SmallVector<StringRef> constraints0 = {"=v", "v", "v"};
-  SmallVector<Value> vals0 = {v, v};
-  Value isNan = buildGCNInstruction(loc, rewriter, "v_cmp_u_f32", constraints0,
-                                    vals0, i1_ty);
+  Value isNan = checkNan(loc, rewriter, v);
+  // SmallVector<StringRef> constraints0 = {"=v", "v", "v"};
+  // SmallVector<Value> vals0 = {v, v};
+  // Value isNan = buildGCNInstruction(loc, rewriter, "v_cmp_u_f32", constraints0,
+  //                                   vals0, i1_ty);
 
   Value v16 = b.i32_val(16);
   Value v1 = b.i32_val(1);
