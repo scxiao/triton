@@ -455,29 +455,6 @@ static Value checkNan(Location loc, RewriterBase &rewriter, Value v) {
       ->getResult(0);
 }
 
-static Value buildGCNInstruction(Location loc, RewriterBase &rewritter,
-                                 StringRef instrName,
-                                 ArrayRef<StringRef> constraints,
-                                 ArrayRef<Value> vals, Type retType) {
-  assert(constraints.size() == vals.size() + 1);
-  assert(vals.size() == 2 || vals.size() == 3);
-  GCNBuilder builder;
-  GCNInstr &instr = *builder.create(instrName.str());
-  GCNBuilder::Operand *out = builder.newOperand(constraints[0]);
-  SmallVector<GCNBuilder::Operand *> operands;
-  for (int i = 0; i < vals.size(); ++i) {
-    operands.push_back(builder.newOperand(vals[i], constraints[i + 1]));
-  }
-
-  if (vals.size() == 2) {
-    instr(out, operands[0], operands[1]);
-  } else {
-    instr(out, operands[0], operands[1], operands[2]);
-  }
-
-  return builder.launch(rewritter, loc, retType, false);
-}
-
 static Value convertFp32ToBf16(Location loc,
                                ConversionPatternRewriter &rewriter,
                                const Value &v, const RoundingMode rounding) {
@@ -495,13 +472,8 @@ static Value convertFp32ToBf16(Location loc,
   // It uses less VGPR and less number of instructions compared to the
   // previous implementation
   Value isNan = checkNan(loc, rewriter, v);
-
   Value v16 = b.i32_val(16);
-  Value v1 = b.i32_val(1);
-  SmallVector<StringRef> constraints1 = {"=v", "v", "v", "v"};
-  SmallVector<Value> vals1 = {v, v16, v1};
-  Value tmp = buildGCNInstruction(loc, rewriter, "v_bfe_u32", constraints1,
-                                  vals1, i32_ty);
+  Value tmp = b.and_(i32_ty, b.lshr(i32_ty, as_int32, v16), b.i32_val(1));
 
   Value v7FFF = b.i32_val(0x7FFF);
   Value s1 = b.add(as_int32, tmp);
