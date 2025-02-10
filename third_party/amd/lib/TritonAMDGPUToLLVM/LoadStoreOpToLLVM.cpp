@@ -1491,9 +1491,18 @@ private:
     afterLoopBlock->addArgument(i32_ty, loc);    // idx
     afterLoopBlock->addArgument(i32_ty, loc);    // cnt
     afterLoopBlock->addArgument(int_ty(1), loc); // isLeader
+
+
     auto *loopBody = rewriter.createBlock(
         curBlock->getParent(), std::next(Region::iterator(curBlock)));
     loopBody->addArgument(i32_ty, loc); // base
+
+    auto *checkOptBlock = rewriter.create(
+      loopBody->getParent(), std::next(Region::iterator(loopBody)));
+    checkOptBlock->addArgument(i32_ty, loc);    // idx
+    checkOptBlock->addArgument(i32_ty, loc);    // cnt
+    checkOptBlock->addArgument(int_ty(1), loc); // isLeader
+
     rewriter.setInsertionPointToEnd(curBlock);
     rewriter.create<LLVM::BrOp>(loc, b.i32_val(0), loopBody);
 
@@ -1522,9 +1531,28 @@ private:
     Value leader = b.icmp_eq(idx, b.i32_val(0));
     cnt = b.sub(cnt, idx);
     idx = b.add(idx, start);
-    rewriter.create<LLVM::CondBrOp>(loc, done, afterLoopBlock,
+
+    rewriter.create<LLVM::CondBrOp>(loc, done, checkOptBlock,
                                     ValueRange({idx, cnt, leader}), loopBody,
                                     ValueRange({base}));
+    rewriter.setInsertioinPointToEnd(checkOptBlock);
+    Value idxRes1 = checkOptBlock->getArgument(0);
+    Value cntRes1 = checkOptBlock->getArgument(1);
+    Value leaderRes1 = checkOptBlock->getArgument(2);
+
+    Value leaderCount = b.trunc(i32_ty, generatePopcount64(rewriter, mask));
+
+    // do the optimization only the number of leader threads is less 32
+    Value worthOpt = b.icmp_ult(leaderCoutn, b.i32_val(32));
+
+    auto *afterRedBlock =
+        afterLoopBlock->splitBlock(rewriter.getInsertionPoint());
+    afterRedBlock->addArgument(operandElemType, loc);
+    afterRedBlock->addArgument(int_ty(1), loc);
+
+    rewriter.create<LLVM::CondBrOp>(loc, done, afterLoopBlock,
+                                    ValueRange({idx1, cnt1, leader1}), afterRedBlock,
+                                    ValueRange({operand, b.i1_val(1)}));
 
     rewriter.setInsertionPointToEnd(afterLoopBlock);
 
@@ -1546,9 +1574,6 @@ private:
     cntRes = b.and_(b.lshr(packedRoleInfo, b.i32_val(8)), b.i32_val(0xff));
     leaderRes = b.icmp_ne(b.and_(packedRoleInfo, b.i32_val(1)), b.i32_val(0));
 
-    auto *afterRedBlock =
-        afterLoopBlock->splitBlock(rewriter.getInsertionPoint());
-    afterRedBlock->addArgument(operandElemType, loc);
     auto *partialReductionBlock =
         rewriter.createBlock(afterLoopBlock->getParent(),
                              std::next(Region::iterator(afterLoopBlock)));
@@ -1558,7 +1583,7 @@ private:
                                     b.icmp_ne(cntRes, b.i32_val(1))),
                   b.i64_val(0));
     rewriter.create<LLVM::CondBrOp>(loc, reductionCond, partialReductionBlock,
-                                    afterRedBlock, operand);
+                                    afterRedBlock, ValueRange({operand, leaderRes}));
     rewriter.setInsertionPointToEnd(partialReductionBlock);
 
     auto performOpIfCond = [&](Value res, Value v, Value cond) -> Value {
@@ -1620,7 +1645,7 @@ private:
     auto *leaderBlock = rewriter.createBlock(
         afterRedBlock->getParent(), std::next(Region::iterator(afterRedBlock)));
     rewriter.setInsertionPointToEnd(afterRedBlock);
-    Value leaderCond = leaderRes;
+    Value leaderCond = afterRedBlock->getArgument(1);
     Value defaultRes = b.undef(operandElemType);
     rewriter.create<LLVM::CondBrOp>(loc, leaderCond, leaderBlock, endBlock,
                                     defaultRes);
