@@ -1493,14 +1493,15 @@ private:
     checkOptBlock->addArgument(i32_ty, loc);    // idx
     checkOptBlock->addArgument(i32_ty, loc);    // cnt
     checkOptBlock->addArgument(int_ty(1), loc); // isLeader
+    checkOptBlock->addArgument(i32_ty, loc); // iterations
 
     auto *loopBody = rewriter.createBlock(
         curBlock->getParent(), std::next(Region::iterator(curBlock)));
     loopBody->addArgument(i32_ty, loc); // base
-
+    loopBody->addArgument(i32_ty, loc); // num iterations
 
     rewriter.setInsertionPointToEnd(curBlock);
-    rewriter.create<LLVM::BrOp>(loc, b.i32_val(0), loopBody);
+    rewriter.create<LLVM::BrOp>(loc, ValueRange({b.i32_val(0), b.i32_val(0)}), loopBody);
 
     // Greed search of same addr within wavefront. Also collect auxiliary
     // information about relative position:
@@ -1516,6 +1517,8 @@ private:
     Value done = b.icmp_eq(chosen, rmwPtr);
     Value mask = targetInfo.ballot(rewriter, loc, i64_ty, done);
     Value start = loopBody->getArgument(0);
+    Value iter = loopBody->getArgument(1);
+    iter = b.add(iter, b.i32_val(1));
     Value cnt = b.trunc(i32_ty, generatePopcount64(rewriter, mask));
     Value mbcntLoRes = rewriter
                            .create<ROCDL::MbcntLoOp>(
@@ -1527,22 +1530,24 @@ private:
     Value leader = b.icmp_eq(idx, b.i32_val(0));
     cnt = b.sub(cnt, idx);
     idx = b.add(idx, start);
+    done = b.or_(i1_ty, done, b.icmp_uge(iter, b.i32_val(16)));
 
     rewriter.setInsertionPointToEnd(loopBody);
     rewriter.create<LLVM::CondBrOp>(loc, done, checkOptBlock,
-                                    ValueRange({idx, cnt, leader}), loopBody,
-                                    ValueRange({base}));
+                                    ValueRange({idx, cnt, leader, iter}), loopBody,
+                                    ValueRange({base, iter}));
 
     rewriter.setInsertionPointToEnd(checkOptBlock);
     Value idx1 = checkOptBlock->getArgument(0);
     Value cnt1 = checkOptBlock->getArgument(1);
     Value leader1 = checkOptBlock->getArgument(2);
+    Value iter1 = checkOptBlock->getArgument(3);
 
-    Value leader2 = targetInfo.ballot(rewriter, loc, i64_ty, leader1);
+    // Value leader2 = targetInfo.ballot(rewriter, loc, i64_ty, leader1);
 
-    Value leaderCount = b.trunc(i32_ty, generatePopcount64(rewriter, leader2));
+    // Value leaderCount = b.trunc(i32_ty, generatePopcount64(rewriter, leader2));
     // do the optimization only the number of leader threads is less 32
-    Value worthOpt = b.icmp_ult(leaderCount, b.i32_val(32));
+    Value worthOpt = b.icmp_ult(iter1, b.i32_val(16));
 
     auto *afterLoopBlock = checkOptBlock->splitBlock(rewriter.getInsertionPoint());    
     afterLoopBlock->addArgument(i32_ty, loc);    // idx
