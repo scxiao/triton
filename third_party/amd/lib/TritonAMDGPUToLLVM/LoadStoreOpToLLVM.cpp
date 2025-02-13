@@ -1392,6 +1392,7 @@ struct AtomicRMWOpConversion
       rewriter.setInsertionPointToEnd(atomicBlock);
       auto maybeKind = matchAtomicOp(atomicRmwAttr);
       Value atom;
+      // enableIntraWaveReduce = false;
       if (enableIntraWaveReduce) {
         atom = atomicIntraWaveReduce(rewriter, rmwPtr, operand, *maybeKind,
                                      atomicMemOrdering, scopeStr.value());
@@ -1543,8 +1544,6 @@ private:
     // do the optimization only the number of leader threads is less 32
     Value worthOpt = b.icmp_ult(leaderCount, b.i32_val(32));
 
-    // auto *afterLoopBlock = rewriter.createBlock(
-    //   checkOptBlock->getParent(), std::next(Region::iterator(checkOptBlock)));
     auto *afterLoopBlock = checkOptBlock->splitBlock(rewriter.getInsertionPoint());    
     afterLoopBlock->addArgument(i32_ty, loc);    // idx
     afterLoopBlock->addArgument(i32_ty, loc);    // cnt
