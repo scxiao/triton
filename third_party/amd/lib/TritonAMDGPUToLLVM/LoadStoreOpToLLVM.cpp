@@ -1543,10 +1543,7 @@ private:
     Value leader1 = checkOptBlock->getArgument(2);
     Value iter1 = checkOptBlock->getArgument(3);
 
-    // Value leader2 = targetInfo.ballot(rewriter, loc, i64_ty, leader1);
-
-    // Value leaderCount = b.trunc(i32_ty, generatePopcount64(rewriter, leader2));
-    // do the optimization only the number of leader threads is less 32
+    // do the optimization only the number of iterations less 16 in computing the leading threads
     Value worthOpt = b.icmp_ult(iter1, b.i32_val(16));
 
     auto *afterLoopBlock = checkOptBlock->splitBlock(rewriter.getInsertionPoint());    
@@ -1554,8 +1551,6 @@ private:
     afterLoopBlock->addArgument(i32_ty, loc);    // cnt
     afterLoopBlock->addArgument(int_ty(1), loc); // isLeader
 
-    // auto *afterRedBlock =
-    //     afterLoopBlock->splitBlock(rewriter.getInsertionPoint());
     auto *afterRedBlock = rewriter.createBlock(afterLoopBlock->getParent(), std::next(Region::iterator(afterLoopBlock)));
     afterRedBlock->addArgument(operandElemType, loc);
     afterRedBlock->addArgument(int_ty(1), loc);
