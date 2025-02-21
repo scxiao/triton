@@ -1737,6 +1737,25 @@ def test_tensor_atomic_cas(sem, num_ctas, device):
 
 
 @pytest.mark.interpreter
+def test_tensor_atomic_add_non_exclusive_offset(device):
+
+    @triton.jit
+    def kernel(X, val, NUM: tl.constexpr):
+        off = tl.arange(0, NUM)
+        offset = off[:, None] * NUM + off[None, :]
+        val = tl.load(val + offset)
+        tl.atomic_add(X + offset // 2, val)
+
+    shape = (4, 8)
+    x = torch.zeros(shape, device=device, dtype=torch.float16)
+    val = torch.randn((64), dtype=torch.float16, device='cuda')
+
+    kernel[(1, )](x, val, 8, num_warps=1)
+    ref = val[0::2] + val[1::2]
+    torch.testing.assert_close(ref, x.reshape(32))
+
+
+@pytest.mark.interpreter
 @pytest.mark.skipif(not is_cuda() or torch.cuda.get_device_capability()[0] < 9,
                     reason="Requires compute capability >= 9 for NV")
 def test_load_scope_sem_coop_grid_cta_not_one(device):
