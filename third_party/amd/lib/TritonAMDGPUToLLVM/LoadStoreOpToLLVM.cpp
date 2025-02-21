@@ -1355,53 +1355,44 @@ struct AtomicRMWOpConversion
         Value isOddI32 = b.urem(tid, b.i32_val(2));
         // First check if odd threads hold adjacent ptrs to even.
         Value castedAddr = b.ptrtoint(i64_ty, rmwPtr);
-        // Fill casted addr by ones if the thread is disabled
-        castedAddr = b.or_(
-            b.mul(b.zext(i64_ty, b.icmp_eq(rmwMask, b.false_val())), i64Ones),
-            castedAddr);
 
-        // Move %val to left neighbour to proceed packed atomic further.
+        // rightNeighbourAddr
+        Value rightNeighbourAddr =
+            genI32TiledOp(rewriter, shiftLeftI32ByDpp, castedAddr);
+        Value leftNeighbourAddr = 
+            genI32TiledOp(rewriter, shiftRightI32ByDpp, castedAddr);
+
+        // Move val to left
         Value packedVal = b.null(packF16Ty);
         packedVal =
             b.insert_element(packF16Ty, packedVal, valElements[i], isOddI32);
         // Pack to i32 type to simplify transaction
         packedVal = b.bitcast(packedVal, i32_ty);
-        // Zero-ize operands for disabled threads to make corresponding
-        // operations dummy
-        packedVal = b.mul(b.zext(i32_ty, rmwMask), packedVal);
         Value dppMoveRes = shiftLeftI32ByDpp(rewriter, packedVal);
 
-        Value rightNeighbourAddr =
-            genI32TiledOp(rewriter, shiftLeftI32ByDpp, castedAddr);
+        // Odd threads disabled only its address is adjacent to its neighbour
+        // even address
+        Value elemTySizeInBytes = b.i64_val(valueElemTy.getIntOrFloatBitWidth() / 8);
+        Value leftIsNeighbour = b.icmp_eq(castAddr, b.add(leftNeighbourAddr, elemTySizeInBytes));
+        Value rightIsNeighbour = b.icmp_eq(rightNeighbourAddr, b.add(castAddr, elemTySizeInBytes));
 
-        Value neighbourEnabled = b.icmp_ne(i64Ones, rightNeighbourAddr);
-        // Packing optimization only supported if both of threads enabled for
-        // now
-        enablePackedOpt = b.and_(
-            b.and_(neighbourEnabled, rmwMask),
-            b.icmp_eq(
-                rightNeighbourAddr,
-                b.add(castedAddr,
-                      b.i64_val(valueElemTy.getIntOrFloatBitWidth() / 8))));
-        // Enable only even threads
-        Value oneDisabled = b.or_(neighbourEnabled, rmwMask);
-        rmwMask = b.and_(oneDisabled, b.icmp_eq(isOddI32, b.i32_val(0)));
+        Value maskI32 = b.bitcast(rmwMask, i32_ty);
+        Value leftNeighbourMask = shiftRightI32ByDpp(rewriter, maskI32);
+        Value rightNeighbourMask = shiftLeftI32ByDpp(rewriter, maskI32);
 
-        // If one of the threads disabled, make corresponding operation dummy to
-        // the neighbour's addr
-        rightNeighbourAddr = b.or_(
-            b.mul(castedAddr,
-                  b.zext(i64_ty, b.icmp_eq(neighbourEnabled, b.false_val()))),
-            b.mul(rightNeighbourAddr,
-                  b.zext(i64_ty, b.icmp_eq(neighbourEnabled, b.true_val()))));
-        castedAddr = b.or_(
-            b.mul(castedAddr, b.zext(i64_ty, b.icmp_eq(rmwMask, b.true_val()))),
-            b.mul(rightNeighbourAddr,
-                  b.zext(i64_ty, b.icmp_eq(rmwMask, b.false_val()))));
-        // Unpack results back
-        rightNeighbourPtr = b.inttoptr(rmwPtr.getType(), rightNeighbourAddr);
-        rmwPtr = b.inttoptr(rmwPtr.getType(), castedAddr);
-        operand = b.bitcast(b.or_(packedVal, dppMoveRes), packF16Ty);
+        // The following conditions need to meet:
+        // 1. tid is even
+        // 2. its right neighbour has adjacent address
+        // 3. its right neighbour mask is on
+        enablePackedOpt = b.and_(b.icmp_eq(isOddI32, b.i32_val(0)), rightIsNeighbour);
+        enablePackedOpt = b.and_(enablePackedOpt, rightNeighbourMask)
+
+        // mask update for odd tid threads, 
+        // if its left neighbour does packed op, then disable its mask
+        // 1. left neighboour is adjacent
+        // 2. mask of left neighbour is on
+        Value leftNeighbourIsPacked = b.and_(leftNeighbourMask, leftIsNeighbour)
+        rmwMask = b.and_(b.icmp_eq(leftNeighbourIsPacked, b.false_val()), rmwMask);
       } else if (vec == 1) {
         operand = valElements[i];
       } else {
@@ -1446,28 +1437,17 @@ struct AtomicRMWOpConversion
               loc, enablePackedOpt, atomicVectorBlock, atomicNonVectorBlock);
 
           rewriter.setInsertionPointToEnd(atomicNonVectorBlock);
-          Value pairedOperand0 =
-              b.extract_element(valueElemTy, operand, b.i32_val(0));
-          Value pairedOperand1 =
-              b.extract_element(valueElemTy, operand, b.i32_val(1));
-          Value atomNonVec0 =
+          Value atom =
               rewriter
                   .create<LLVM::AtomicRMWOp>(loc, *maybeKind, rmwPtr,
-                                             pairedOperand0, atomicMemOrdering,
+                                             valElements[i], atomicMemOrdering,
                                              StringRef(scopeStr.value()))
                   .getResult();
-          Value atomNonVec1 =
-              rewriter
-                  .create<LLVM::AtomicRMWOp>(loc, *maybeKind, rightNeighbourPtr,
-                                             pairedOperand1, atomicMemOrdering,
-                                             StringRef(scopeStr.value()))
-                  .getResult();
+
           Value packedRes = b.null(packF16Ty);
           packedRes =
-              b.insert_element(packF16Ty, packedRes, atomNonVec0, b.i32_val(0));
-          packedRes =
-              b.insert_element(packF16Ty, packedRes, atomNonVec1, b.i32_val(1));
-          rewriter.create<LLVM::BrOp>(loc, packedRes, endBlock);
+              b.insert_element(packF16Ty, packedRes, atom, b.urem(tid, b.i32_val(2));
+          rewriter.create<LLVM::BrOp>(loc, packedRes, endBlock);                  
 
           // Just start to fill up `atomicVectorBlock`.
           rewriter.setInsertionPointToEnd(atomicVectorBlock);
