@@ -1460,7 +1460,7 @@ struct AtomicRMWOpConversion
 
           Value packedRes = b.null(packF16Ty);
           packedRes =
-              b.insert_element(packF16Ty, packedRes, atom, b.urem(tid, b.i32_val(2)));
+              b.insert_element(packF16Ty, packedRes, atom, b.i32_val(0));
           rewriter.create<LLVM::BrOp>(loc, packedRes, endBlock);                  
 
           // Just start to fill up `atomicVectorBlock`.
@@ -1492,12 +1492,9 @@ struct AtomicRMWOpConversion
           Value dppMovRes = shiftRightI32ByDpp(rewriter, packedRet);
           // Unpack results back
           Value unpackedDppRes = b.bitcast(dppMovRes, packF16Ty);
-          retVal = b.insert_element(
-              packF16Ty, retVal,
-              b.extract_element(valueElemTy, unpackedDppRes, b.i32_val(1)),
-              b.i32_val(1));
-          resultVals[i] =
-              b.extract_element(valueElemTy, retVal, b.urem(tid, b.i32_val(2)));
+          Value neighborAtomRes = b.extract_element(valueElemTy, unpackedDppRes, b.i32_val(1));
+          Value atomicRes = b.extract_element(valueElemTy, packedRet, b.i32_val(0));
+          resultVals[i] = b.select(rmwMask, atomicRes, neighborAtomRes);
         } else {
           for (int ii = 0; ii < vec; ++ii) {
             resultVals[i + ii] =
