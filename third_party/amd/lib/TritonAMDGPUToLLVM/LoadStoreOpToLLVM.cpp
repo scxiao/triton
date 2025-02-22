@@ -1373,8 +1373,8 @@ struct AtomicRMWOpConversion
         // Odd threads disabled only its address is adjacent to its neighbour
         // even address
         Value elemTySizeInBytes = b.i64_val(valueElemTy.getIntOrFloatBitWidth() / 8);
-        Value leftIsNeighbour = b.icmp_eq(castAddr, b.add(leftNeighbourAddr, elemTySizeInBytes));
-        Value rightIsNeighbour = b.icmp_eq(rightNeighbourAddr, b.add(castAddr, elemTySizeInBytes));
+        Value leftIsNeighbour = b.icmp_eq(castedAddr, b.add(leftNeighbourAddr, elemTySizeInBytes));
+        Value rightIsNeighbour = b.icmp_eq(rightNeighbourAddr, b.add(castedAddr, elemTySizeInBytes));
 
         Value maskI32 = b.bitcast(rmwMask, i32_ty);
         Value leftNeighbourMask = shiftRightI32ByDpp(rewriter, maskI32);
@@ -1385,13 +1385,13 @@ struct AtomicRMWOpConversion
         // 2. its right neighbour has adjacent address
         // 3. its right neighbour mask is on
         enablePackedOpt = b.and_(b.icmp_eq(isOddI32, b.i32_val(0)), rightIsNeighbour);
-        enablePackedOpt = b.and_(enablePackedOpt, rightNeighbourMask)
+        enablePackedOpt = b.and_(enablePackedOpt, rightNeighbourMask);
 
         // mask update for odd tid threads, 
         // if its left neighbour does packed op, then disable its mask
         // 1. left neighboour is adjacent
         // 2. mask of left neighbour is on
-        Value leftNeighbourIsPacked = b.and_(leftNeighbourMask, leftIsNeighbour)
+        Value leftNeighbourIsPacked = b.and_(leftNeighbourMask, leftIsNeighbour);
         rmwMask = b.and_(b.icmp_eq(leftNeighbourIsPacked, b.false_val()), rmwMask);
       } else if (vec == 1) {
         operand = valElements[i];
@@ -1446,7 +1446,7 @@ struct AtomicRMWOpConversion
 
           Value packedRes = b.null(packF16Ty);
           packedRes =
-              b.insert_element(packF16Ty, packedRes, atom, b.urem(tid, b.i32_val(2));
+              b.insert_element(packF16Ty, packedRes, atom, b.urem(tid, b.i32_val(2)));
           rewriter.create<LLVM::BrOp>(loc, packedRes, endBlock);                  
 
           // Just start to fill up `atomicVectorBlock`.
