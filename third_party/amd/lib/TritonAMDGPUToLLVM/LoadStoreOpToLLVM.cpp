@@ -1365,10 +1365,15 @@ struct AtomicRMWOpConversion
         // Move val to left
         Value packedVal = b.null(packF16Ty);
         packedVal =
-            b.insert_element(packF16Ty, packedVal, valElements[i], isOddI32);
+            b.insert_element(packF16Ty, packedVal, valElements[i], b.i32_val(0));
         // Pack to i32 type to simplify transaction
         packedVal = b.bitcast(packedVal, i32_ty);
         Value dppMoveRes = shiftLeftI32ByDpp(rewriter, packedVal);
+
+        Value unpackedDppRes = b.bitcast(dppMoveRes, packF16Ty);
+        operand = b.undef(packF16Ty);
+        operand = b.insert_element(packF16Ty, operand, valElements[i], b.i32_val(0));
+        operand = b.insert_element(packF16Ty, operand, b.extract_element(valueElemTy, unpackedDppRes, b.i32_val(0)), b.i32_val(1));
 
         // Odd threads disabled only its address is adjacent to its neighbour
         // even address
@@ -1376,9 +1381,18 @@ struct AtomicRMWOpConversion
         Value leftIsNeighbour = b.icmp_eq(castedAddr, b.add(leftNeighbourAddr, elemTySizeInBytes));
         Value rightIsNeighbour = b.icmp_eq(rightNeighbourAddr, b.add(castedAddr, elemTySizeInBytes));
 
-        Value maskI32 = b.bitcast(rmwMask, i32_ty);
-        Value leftNeighbourMask = shiftRightI32ByDpp(rewriter, maskI32);
-        Value rightNeighbourMask = shiftLeftI32ByDpp(rewriter, maskI32);
+        Type packBitTy = vec_ty(i1_ty, 32);
+        
+        Value maskI32 = b.null(packBitTy);
+        maskI32 = b.insert_element(packBitTy, maskI32, rmwMask, b.i32_val(0));
+        maskI32 = b.bitcast(maskI32, i32_ty);
+        Value leftMask = shiftRightI32ByDpp(rewriter, maskI32);
+        Value rightMask = shiftLeftI32ByDpp(rewriter, maskI32);
+        Value packedLeftNeighbourMask = b.bitcast(leftMask, packBitTy);
+        Value packedRightNeighbourMask = b.bitcast(rightMask, packBitTy);
+
+        Value leftNeighbourMask = b.extract_element(i1_ty, packedLeftNeighbourMask, b.i32_val(0));
+        Value rightNeighbourMask = b.extract_element(i1_ty, packedRightNeighbourMask, b.i32_val(0));
 
         // The following conditions need to meet:
         // 1. tid is even
