@@ -1398,8 +1398,10 @@ struct AtomicRMWOpConversion
         // 1. tid is even
         // 2. its right neighbour has adjacent address
         // 3. its right neighbour mask is on
+        // 4. address is multiple of 4
         enablePackedOpt = b.and_(b.icmp_eq(isOddI32, b.i32_val(0)), rightIsNeighbour);
         enablePackedOpt = b.and_(enablePackedOpt, rightNeighbourMask);
+        enablePackedOpt = b.and_(b.icmp_eq(b.urem(castedAddr, b.i64_val(4)), b.i64_val(0)), rightNeighbourMask);
 
         // mask update for odd tid threads, 
         // if its left neighbour does packed op, then disable its mask
