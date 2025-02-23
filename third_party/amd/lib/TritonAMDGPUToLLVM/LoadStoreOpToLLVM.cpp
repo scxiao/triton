@@ -1408,21 +1408,26 @@ struct AtomicRMWOpConversion
         // 2. its right neighbour has adjacent address
         // 3. its right neighbour mask is on
         // 4. address is multiple of 4
+        // 5. Its own mask is on
         enablePackedOpt =
             b.and_(b.icmp_eq(isOddI32, b.i32_val(0)), rightIsNeighbour);
         enablePackedOpt = b.and_(enablePackedOpt, rightNeighbourMask);
         enablePackedOpt =
             b.and_(b.icmp_eq(b.urem(castedAddr, b.i64_val(4)), b.i64_val(0)),
-                   rightNeighbourMask);
+            enablePackedOpt);
+        enablePackedOpt = b.and_(rmwMask, enablePackedOpt);
 
         // mask update for odd tid threads,
         // if its left neighbour does packed op, then disable its mask
-        // 1. left neighboour is adjacent
-        // 2. mask of left neighbour is on
-        Value leftNeighbourIsPacked =
-            b.and_(leftNeighbourMask, leftIsNeighbour);
+        Value packedFlagI32 = b.null(packBitTy);
+        packedFlagI32 = b.insert_element(packBitTy, packedFlagI32, enablePackedOpt, b.i32_val(0));
+        packedFlagI32 = b.bitcast(packedFlagI32, i32_ty);
+        Value leftPackedFlagI32 = shiftRightI32ByDpp(rewriter, packedFlagI32);
+        leftPackedFlagI32 = b.bitcast(leftPackedFlagI32, packBitTy);
+        Value leftPackedFlag = b.extract_element(i1_ty, leftPackedFlagI32, b.i32_val(0));
+
         rmwMask =
-            b.and_(b.icmp_eq(leftNeighbourIsPacked, b.false_val()), rmwMask);
+            b.and_(b.icmp_eq(leftPackedFlag, b.false_val()), rmwMask);
       } else if (vec == 1) {
         operand = valElements[i];
       } else {
