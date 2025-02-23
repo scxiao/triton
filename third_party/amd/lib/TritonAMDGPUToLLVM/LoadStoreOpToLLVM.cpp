@@ -1359,30 +1359,37 @@ struct AtomicRMWOpConversion
         // rightNeighbourAddr
         Value rightNeighbourAddr =
             genI32TiledOp(rewriter, shiftLeftI32ByDpp, castedAddr);
-        Value leftNeighbourAddr = 
+        Value leftNeighbourAddr =
             genI32TiledOp(rewriter, shiftRightI32ByDpp, castedAddr);
 
         // Move val to left
         Value packedVal = b.null(packF16Ty);
-        packedVal =
-            b.insert_element(packF16Ty, packedVal, valElements[i], b.i32_val(0));
+        packedVal = b.insert_element(packF16Ty, packedVal, valElements[i],
+                                     b.i32_val(0));
         // Pack to i32 type to simplify transaction
         packedVal = b.bitcast(packedVal, i32_ty);
         Value dppMoveRes = shiftLeftI32ByDpp(rewriter, packedVal);
 
         Value unpackedDppRes = b.bitcast(dppMoveRes, packF16Ty);
         operand = b.undef(packF16Ty);
-        operand = b.insert_element(packF16Ty, operand, valElements[i], b.i32_val(0));
-        operand = b.insert_element(packF16Ty, operand, b.extract_element(valueElemTy, unpackedDppRes, b.i32_val(0)), b.i32_val(1));
+        operand =
+            b.insert_element(packF16Ty, operand, valElements[i], b.i32_val(0));
+        operand = b.insert_element(
+            packF16Ty, operand,
+            b.extract_element(valueElemTy, unpackedDppRes, b.i32_val(0)),
+            b.i32_val(1));
 
         // Odd threads disabled only its address is adjacent to its neighbour
         // even address
-        Value elemTySizeInBytes = b.i64_val(valueElemTy.getIntOrFloatBitWidth() / 8);
-        Value leftIsNeighbour = b.icmp_eq(castedAddr, b.add(leftNeighbourAddr, elemTySizeInBytes));
-        Value rightIsNeighbour = b.icmp_eq(rightNeighbourAddr, b.add(castedAddr, elemTySizeInBytes));
+        Value elemTySizeInBytes =
+            b.i64_val(valueElemTy.getIntOrFloatBitWidth() / 8);
+        Value leftIsNeighbour =
+            b.icmp_eq(castedAddr, b.add(leftNeighbourAddr, elemTySizeInBytes));
+        Value rightIsNeighbour =
+            b.icmp_eq(rightNeighbourAddr, b.add(castedAddr, elemTySizeInBytes));
 
         Type packBitTy = vec_ty(i1_ty, 32);
-        
+
         Value maskI32 = b.null(packBitTy);
         maskI32 = b.insert_element(packBitTy, maskI32, rmwMask, b.i32_val(0));
         maskI32 = b.bitcast(maskI32, i32_ty);
@@ -1391,24 +1398,31 @@ struct AtomicRMWOpConversion
         Value packedLeftNeighbourMask = b.bitcast(leftMask, packBitTy);
         Value packedRightNeighbourMask = b.bitcast(rightMask, packBitTy);
 
-        Value leftNeighbourMask = b.extract_element(i1_ty, packedLeftNeighbourMask, b.i32_val(0));
-        Value rightNeighbourMask = b.extract_element(i1_ty, packedRightNeighbourMask, b.i32_val(0));
+        Value leftNeighbourMask =
+            b.extract_element(i1_ty, packedLeftNeighbourMask, b.i32_val(0));
+        Value rightNeighbourMask =
+            b.extract_element(i1_ty, packedRightNeighbourMask, b.i32_val(0));
 
         // The following conditions need to meet:
         // 1. tid is even
         // 2. its right neighbour has adjacent address
         // 3. its right neighbour mask is on
         // 4. address is multiple of 4
-        enablePackedOpt = b.and_(b.icmp_eq(isOddI32, b.i32_val(0)), rightIsNeighbour);
+        enablePackedOpt =
+            b.and_(b.icmp_eq(isOddI32, b.i32_val(0)), rightIsNeighbour);
         enablePackedOpt = b.and_(enablePackedOpt, rightNeighbourMask);
-        enablePackedOpt = b.and_(b.icmp_eq(b.urem(castedAddr, b.i64_val(4)), b.i64_val(0)), rightNeighbourMask);
+        enablePackedOpt =
+            b.and_(b.icmp_eq(b.urem(castedAddr, b.i64_val(4)), b.i64_val(0)),
+                   rightNeighbourMask);
 
-        // mask update for odd tid threads, 
+        // mask update for odd tid threads,
         // if its left neighbour does packed op, then disable its mask
         // 1. left neighboour is adjacent
         // 2. mask of left neighbour is on
-        Value leftNeighbourIsPacked = b.and_(leftNeighbourMask, leftIsNeighbour);
-        rmwMask = b.and_(b.icmp_eq(leftNeighbourIsPacked, b.false_val()), rmwMask);
+        Value leftNeighbourIsPacked =
+            b.and_(leftNeighbourMask, leftIsNeighbour);
+        rmwMask =
+            b.and_(b.icmp_eq(leftNeighbourIsPacked, b.false_val()), rmwMask);
       } else if (vec == 1) {
         operand = valElements[i];
       } else {
@@ -1453,17 +1467,16 @@ struct AtomicRMWOpConversion
               loc, enablePackedOpt, atomicVectorBlock, atomicNonVectorBlock);
 
           rewriter.setInsertionPointToEnd(atomicNonVectorBlock);
-          Value atom =
-              rewriter
-                  .create<LLVM::AtomicRMWOp>(loc, *maybeKind, rmwPtr,
-                                             valElements[i], atomicMemOrdering,
-                                             StringRef(scopeStr.value()))
-                  .getResult();
+          Value atom = rewriter
+                           .create<LLVM::AtomicRMWOp>(
+                               loc, *maybeKind, rmwPtr, valElements[i],
+                               atomicMemOrdering, StringRef(scopeStr.value()))
+                           .getResult();
 
           Value packedRes = b.null(packF16Ty);
           packedRes =
               b.insert_element(packF16Ty, packedRes, atom, b.i32_val(0));
-          rewriter.create<LLVM::BrOp>(loc, packedRes, endBlock);                  
+          rewriter.create<LLVM::BrOp>(loc, packedRes, endBlock);
 
           // Just start to fill up `atomicVectorBlock`.
           rewriter.setInsertionPointToEnd(atomicVectorBlock);
@@ -1494,8 +1507,10 @@ struct AtomicRMWOpConversion
           Value dppMovRes = shiftRightI32ByDpp(rewriter, packedRet);
           // Unpack results back
           Value unpackedDppRes = b.bitcast(dppMovRes, packF16Ty);
-          Value neighborAtomRes = b.extract_element(valueElemTy, unpackedDppRes, b.i32_val(1));
-          Value atomicRes = b.extract_element(valueElemTy, retVal, b.i32_val(0));
+          Value neighborAtomRes =
+              b.extract_element(valueElemTy, unpackedDppRes, b.i32_val(1));
+          Value atomicRes =
+              b.extract_element(valueElemTy, retVal, b.i32_val(0));
           resultVals[i] = b.select(rmwMask, atomicRes, neighborAtomRes);
         } else {
           for (int ii = 0; ii < vec; ++ii) {
