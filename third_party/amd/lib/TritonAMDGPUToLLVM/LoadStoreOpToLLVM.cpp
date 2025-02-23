@@ -1493,7 +1493,7 @@ struct AtomicRMWOpConversion
           // Unpack results back
           Value unpackedDppRes = b.bitcast(dppMovRes, packF16Ty);
           Value neighborAtomRes = b.extract_element(valueElemTy, unpackedDppRes, b.i32_val(1));
-          Value atomicRes = b.extract_element(valueElemTy, packedRet, b.i32_val(0));
+          Value atomicRes = b.extract_element(valueElemTy, retVal, b.i32_val(0));
           resultVals[i] = b.select(rmwMask, atomicRes, neighborAtomRes);
         } else {
           for (int ii = 0; ii < vec; ++ii) {
