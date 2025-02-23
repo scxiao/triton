@@ -1424,10 +1424,10 @@ struct AtomicRMWOpConversion
         packedFlagI32 = b.bitcast(packedFlagI32, i32_ty);
         Value leftPackedFlagI32 = shiftRightI32ByDpp(rewriter, packedFlagI32);
         leftPackedFlagI32 = b.bitcast(leftPackedFlagI32, packBitTy);
-        Value leftPackedFlag = b.extract_element(i1_ty, leftPackedFlagI32, b.i32_val(0));
-
+        Value leftNeighbourPacked = b.extract_element(i1_ty, leftPackedFlagI32, b.i32_val(0));
+        
         rmwMask =
-            b.and_(b.icmp_eq(leftPackedFlag, b.false_val()), rmwMask);
+            b.and_(b.icmp_eq(leftNeighbourPacked, b.false_val()), rmwMask);
       } else if (vec == 1) {
         operand = valElements[i];
       } else {
