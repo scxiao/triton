@@ -214,6 +214,29 @@ struct LoadStoreConversionBase {
     return axisAnalysisPass.getPtrAlignment(ptr);
   }
 
+  std::optional<const char *> getAMDGPUMemScopeStr(MemSyncScope scope) const {
+    // See: https://llvm.org/docs/AMDGPUUsage.html#memory-scopes
+    auto scopeStr = "";
+    switch (scope) {
+    case MemSyncScope::SYSTEM:
+      // The default AMDHSA LLVM Sync Scope is "system", so no string is
+      // provided here
+      scopeStr = "";
+      break;
+    case MemSyncScope::GPU:
+      scopeStr = "agent";
+      break;
+    case MemSyncScope::CTA:
+      scopeStr = "workgroup";
+      break;
+    default:
+      return std::nullopt;
+    }
+
+    return scopeStr;
+
+  }
+
 protected:
   const AMD::TargetInfo &targetInfo;
   ModuleAxisInfoAnalysis &axisAnalysisPass;
@@ -869,17 +892,17 @@ struct AtomicRMWOpConversion
     // tt::atomicRmwOp(%ptr, %val, %mask):
     // 0. Group thread by pairs. Master thread is (tid % 2 == 0);
     // 1. All the threads send %val to (tid - 1) thread via dppUpdateOp shl, so
-    //    all the masters recieve value from secondary threads;
+    //    all the masters receive value from secondary threads;
     // 2. Take into account parity in the %mask value, build control flow
     //    structures according to it;
     // 3. Generate llvm::atomicRmwOp in the threads enabled by %mask value;
     // 4. All the threads send result of generated operation to (tid + 1) thread
-    //    via dppUpdateOp shl, so all secondary thread also recieve their
+    //    via dppUpdateOp shl, so all secondary thread also receive their
     //    result.
     //
     // This approach enables us to use half the active threads committing atomic
     // requests to avoid generating of code providing unified access to f16
-    // element and reduce contantion.
+    // element and reduce contention.
     bool useDppForPackedF16 = false;
     // tensor
     if (tensorTy) {
@@ -887,23 +910,26 @@ struct AtomicRMWOpConversion
       bool isF16Ty = valueElemTy.isF16() || valueElemTy.isBF16();
       unsigned availableVecSize = isF16Ty ? 2 : 1;
       vec = std::min<unsigned>(vec, availableVecSize);
-      // Force F16 packing  in the case it's not comming in as packed, but the
+      // Force F16 packing in the case it's not coming in as packed, but the
       // ISA can support packed atomic instructions.
       useDppForPackedF16 =
           supportsGlobalAtomicF16PackedAndDpp(targetInfo.getISAFamily()) &&
-          vec == 1 && isF16Ty && atomicRmwAttr == RMWOp::FADD;
+          vec == 1 && isF16Ty && atomicRmwAttr == RMWOp::FADD &&
+          !enableIntraWaveReduce;
       // mask
       numElems = tensorTy.getNumElements();
     }
-    Value mask = int_val(1, 1);
-    auto tid = tid_val();
-    mask = and_(mask,
-                icmp_slt(mul(tid, i32_val(elemsPerThread)), i32_val(numElems)));
-    if (useDppForPackedF16)
-      mask = and_(mask, icmp_eq(urem(tid, i32_val(2)), i32_val(0)));
+    Value mask = b.true_val();
+    auto tid = getThreadId(rewriter, loc);
+    mask = b.and_(mask, b.icmp_slt(b.mul(tid, b.i32_val(elemsPerThread)),
+                                   b.i32_val(numElems)));
 
     auto memOrdering = op.getSem();
     auto atomicMemOrdering = getMemoryOrdering(memOrdering);
+
+    std::optional<const char *> scopeStr = getAMDGPUMemScopeStr(scope);
+    if (!scopeStr)
+      return rewriter.notifyMatchFailure(op, "Unknown AMDGPU memory scope");
 
     auto vecTy = vec_ty(valueElemTy, vec);
     auto retType = vec == 1 ? valueElemTy : vecTy;
@@ -916,24 +942,59 @@ struct AtomicRMWOpConversion
       // elemsPerThread.
       Value rmwMask = llMask ? and_(mask, maskElements[i]) : mask;
 
+      Value i64Ones = b.i64_val(~uint64_t(0));
+      Value i64Zeros = b.i64_val(0);
       Value operand;
+      Value rightNeighbourPtr;
+      Value enablePackedOpt;
       if (useDppForPackedF16) {
+        Value isOddI32 = b.urem(tid, b.i32_val(2));
+        // First check if odd threads hold adjacent ptrs to even ones.
+        Value castedAddr = b.ptrtoint(i64_ty, rmwPtr);
+        // Set casted addr to all ones if the thread is disabled.
+        castedAddr = b.select(rmwMask, castedAddr, i64Ones);
+
         // Move %val to left neighbour to proceed packed atomic further.
-        Value packedVal = null(packF16Ty);
+        Value packedVal = b.null(packF16Ty);
         packedVal =
-            insert_element(packF16Ty, packedVal, valElements[i], i32_val(0));
-        // Pack to i32 type to simplify transaction
-        packedVal = bitcast(packedVal, i32_ty);
+            b.insert_element(packF16Ty, packedVal, valElements[i], isOddI32);
+        // Pack to i32 type to simplify transaction.
+        packedVal = b.bitcast(packedVal, i32_ty);
+        // Zero operands for disabled threads to make addition no op.
+        packedVal = b.select(rmwMask, packedVal, b.i32_val(0));
         Value dppMoveRes = shiftLeftI32ByDpp(rewriter, packedVal);
+
+        Value rightNeighbourAddr =
+            genI32TiledOp(rewriter, shiftLeftI32ByDpp, castedAddr);
+
+        // Packing optimization only supported if following conditions are true:
+        // 1. address is aligned by 4 bytes
+        // 2. right neighbour has adjacent address
+        // 3. both threads are active
+        Value isAligned =
+            b.icmp_eq(b.urem(castedAddr, b.i64_val(4)), b.i64_val(0));
+        Value neighbourAddrAdjacent = b.icmp_eq(
+            rightNeighbourAddr,
+            b.add(castedAddr,
+                  b.i64_val(valueElemTy.getIntOrFloatBitWidth() / 8)));
+        Value neighbourEnabled = b.icmp_ne(i64Ones, rightNeighbourAddr);
+        Value bothEnabled = b.and_(neighbourEnabled, rmwMask);
+        enablePackedOpt =
+            b.and_(b.and_(isAligned, bothEnabled), neighbourAddrAdjacent);
+
+        // Enable only the even threads.
+        Value anyEnabled = b.or_(neighbourEnabled, rmwMask);
+        // If one of the threads is disabled, use the neighbour's addr.
+        rightNeighbourAddr =
+            b.select(neighbourEnabled, rightNeighbourAddr, castedAddr);
+        castedAddr = b.select(rmwMask, castedAddr, rightNeighbourAddr);
+
+        rmwMask = b.and_(anyEnabled, b.icmp_eq(isOddI32, b.i32_val(0)));
+
         // Unpack results back
-        Value unpackedDppRes = bitcast(dppMoveRes, packF16Ty);
-        operand = undef(packF16Ty);
-        operand =
-            insert_element(packF16Ty, operand, valElements[i], i32_val(0));
-        operand = insert_element(
-            packF16Ty, operand,
-            extract_element(valueElemTy, unpackedDppRes, i32_val(0)),
-            i32_val(1));
+        rightNeighbourPtr = b.inttoptr(rmwPtr.getType(), rightNeighbourAddr);
+        rmwPtr = b.inttoptr(rmwPtr.getType(), castedAddr);
+        operand = b.bitcast(b.or_(packedVal, dppMoveRes), packF16Ty);
       } else if (vec == 1) {
         operand = valElements[i];
       } else {
@@ -958,15 +1019,47 @@ struct AtomicRMWOpConversion
       rewriter.setInsertionPointToEnd(atomicBlock);
       auto maybeKind = matchAtomicOp(atomicRmwAttr);
       Value atom;
+      Value isVecOp;
       if (enableIntraWaveReduce) {
         atom = atomicIntraWaveReduce(rewriter, rmwPtr, operand, *maybeKind,
-                                     atomicMemOrdering, scopeStr.value());
+                                     atomicMemOrdering, *scopeStr);
       } else {
-        atom = rewriter
-                   .create<LLVM::AtomicRMWOp>(loc, *maybeKind, rmwPtr, operand,
-                                              atomicMemOrdering,
-                                              StringRef(scopeStr.value()))
-                   .getResult();
+        if (useDppForPackedF16) {
+          // Determine on the runtime what atomic intrinsic to execute:
+          // packed or regular.
+          auto *packedBlock =
+              atomicBlock->splitBlock(rewriter.getInsertionPoint());
+          auto *regularBlock =
+              rewriter.createBlock(atomicBlock->getParent(),
+                                   std::next(Region::iterator(atomicBlock)));
+          rewriter.setInsertionPointToEnd(atomicBlock);
+          rewriter.create<LLVM::CondBrOp>(loc, enablePackedOpt, packedBlock,
+                                          regularBlock);
+
+          // Fill out the regular block, where we issue two atomic ops.
+          rewriter.setInsertionPointToEnd(regularBlock);
+          Value pairedOperand0 =
+              b.extract_element(valueElemTy, operand, b.i32_val(0));
+          Value pairedOperand1 =
+              b.extract_element(valueElemTy, operand, b.i32_val(1));
+          Value atomNonVec0 = rewriter.create<LLVM::AtomicRMWOp>(
+              loc, *maybeKind, rmwPtr, pairedOperand0, atomicMemOrdering,
+              *scopeStr);
+          Value atomNonVec1 = rewriter.create<LLVM::AtomicRMWOp>(
+              loc, *maybeKind, rightNeighbourPtr, pairedOperand1,
+              atomicMemOrdering, *scopeStr);
+          Value packedRes = b.undef(packF16Ty);
+          packedRes =
+              b.insert_element(packF16Ty, packedRes, atomNonVec0, b.i32_val(0));
+          packedRes =
+              b.insert_element(packF16Ty, packedRes, atomNonVec1, b.i32_val(1));
+          rewriter.create<LLVM::BrOp>(loc, packedRes, endBlock);
+
+          // Start to fill out the packed block.
+          rewriter.setInsertionPointToEnd(packedBlock);
+        }
+        atom = rewriter.create<LLVM::AtomicRMWOp>(
+            loc, *maybeKind, rmwPtr, operand, atomicMemOrdering, *scopeStr);
       }
 
       // NV for the f16v2 case generates one packed instruction. We have to
@@ -1199,12 +1292,9 @@ private:
                                     defaultRes);
     rewriter.setInsertionPointToEnd(leaderBlock);
     // Utilize global atomic only by leader threads
-    rmwPtr = inttoptr(origPtrType, rmwPtr);
-    Value atom = rewriter
-                     .create<LLVM::AtomicRMWOp>(loc, opKind, rmwPtr,
-                                                afterRedBlock->getArgument(0),
-                                                memOrdering, scope)
-                     .getResult();
+    rmwPtr = b.inttoptr(origPtrType, rmwPtr);
+    Value atom = rewriter.create<LLVM::AtomicRMWOp>(
+        loc, opKind, rmwPtr, afterRedBlock->getArgument(0), memOrdering, scope);
     rewriter.create<LLVM::BrOp>(loc, atom, endBlock);
     rewriter.setInsertionPointToStart(endBlock);
 
