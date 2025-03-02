@@ -130,12 +130,22 @@ class OptimizeAMDLDSUsage
     SmallVector<Attribute> tmpLayouts;
     for (int i = 0; i < factorizedNumWarps.size(); i++) {
       auto warpsPerCTA = factorizedNumWarps[i];
-      tmpLayouts.push_back(
-          mlir::triton::AMD::createTmpLayout(srcEnc, warpsPerCTA));
-      tmpLayouts.push_back(
-          mlir::triton::AMD::createTmpLayout(dstEnc, warpsPerCTA));
-      tmpLayouts.push_back(
+      // tmpLayouts.push_back(
+      //     mlir::triton::AMD::createTmpLayout(srcEnc, warpsPerCTA));
+      // tmpLayouts.push_back(
+      //     mlir::triton::AMD::createTmpLayout(dstEnc, warpsPerCTA));
+      // tmpLayouts.push_back(
+      //     mlir::triton::AMD::createTmpLayout(baseFallbackLayout, warpsPerCTA));
+      // auto pushNotNull = [&](Attribute enc) {
+      //   if (enc)
+      //     tmpLayouts.push_back(enc);
+      // };
+
+      pushNotNull(mlir::triton::AMD::createTmpLayout(srcEnc, warpsPerCTA));
+      pushNotNull(mlir::triton::AMD::createTmpLayout(dstEnc, warpsPerCTA));
+      pushNotNull(
           mlir::triton::AMD::createTmpLayout(baseFallbackLayout, warpsPerCTA));
+
     }
 
     unsigned minLDSUsage = 2 * LDSLimit;

@@ -6,7 +6,8 @@ add_triton_library(TritonAMDGPUTransforms
   ReorderInstructions.cpp
   StreamPipelineV2.cpp
   MfmaGroup.cpp
-
+  InThreadTranspose.cpp
+  
   DEPENDS
   TritonAMDGPUTransformsIncGen
   TritonGPUIR

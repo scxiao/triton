@@ -58,6 +58,10 @@ class HIPOptions:
     # be gone entirely anytime.
     instruction_sched_variant: str = 'default'
 
+    # The following option is an experimental option to control optimization of shared memory accesses.
+    # Will be removed when proper heuristic is implemented.
+    enable_thread_rake: bool = False
+
     def __post_init__(self):
         default_libdir = Path(__file__).parent / 'lib'
         extern_libs = {} if self.extern_libs is None else dict(self.extern_libs)
@@ -231,6 +235,10 @@ class HIPBackend(BaseBackend):
         passes.ttgpuir.add_optimize_dot_operands(pm, True)
         passes.ttgpuir.add_remove_layout_conversions(pm)
         passes.ttgpuir.add_reduce_data_duplication(pm)
+        if options.enable_thread_rake:
+            amd.passes.ttgpuir.add_in_thread_transpose(pm)
+            passes.ttgpuir.add_remove_layout_conversions(pm)
+
         if amd.has_matrix_core_feature(options.arch):
             amd.passes.ttgpuir.add_reorder_instructions(pm)
         if os.environ.get("AMDGCN_USE_BUFFER_OPS", "0") == "1":

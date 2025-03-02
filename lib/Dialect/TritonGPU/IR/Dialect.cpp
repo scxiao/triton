@@ -309,6 +309,14 @@ SmallVector<unsigned> getOrder(Attribute layout) {
     return llvm::to_vector(sharedLayout.getOrder());
   }
 
+  if (auto sharedLayout =
+    mlir::dyn_cast<SwizzledBlocksSharedEncodingAttr>(layout)) {
+    return llvm::to_vector(sharedLayout.getOrder());
+  }
+  if (auto linearLayout = mlir::dyn_cast<LinearEncodingAttr>(layout)) {
+    return linearLayout.getOrder();
+  }
+
   llvm::report_fatal_error("Unimplemented usage of getOrder");
   return {};
 };
@@ -1018,6 +1026,18 @@ unsigned DotOperandEncodingAttr::getTotalElemsPerThread(ArrayRef<int64_t> shape,
   llvm_unreachable("unknown dot operand parent layout");
   return 0;
 }
+
+
+SmallVector<unsigned> SwizzledBlocksSharedEncodingAttr::getCTAsPerCGA() const {
+  return SmallVector<unsigned>(getCTALayout().getCTAsPerCGA());
+}
+SmallVector<unsigned> SwizzledBlocksSharedEncodingAttr::getCTAOrder() const {
+  return SmallVector<unsigned>(getCTALayout().getCTAOrder());
+}
+SmallVector<unsigned> SwizzledBlocksSharedEncodingAttr::getCTASplitNum() const {
+  return SmallVector<unsigned>(getCTALayout().getCTASplitNum());
+}
+
 SmallVector<unsigned> DotOperandEncodingAttr::getCTAsPerCGA() const {
   return ::getCTAsPerCGA(getParent());
 }
@@ -1287,6 +1307,80 @@ void NvidiaMmaEncodingAttr::print(AsmPrinter &printer) const {
                       /*rank=*/getWarpsPerCTA().size());
 
   printer << ", instrShape = [" << getInstrShape() << "]}>";
+}
+
+//===----------------------------------------------------------------------===//
+// AMDSwizzledShared encoding
+//===----------------------------------------------------------------------===//
+
+Attribute SwizzledBlocksSharedEncodingAttr::parse(AsmParser &parser,
+                                                  Type type) {
+  if (parser.parseLess().failed())
+    return {};
+  // Parse the data as a dictionary
+  DictionaryAttr dict;
+  if (parser.parseAttribute(dict).failed())
+    return {};
+  if (parser.parseGreater().failed())
+    return {};
+
+  unsigned vec = 0;
+  unsigned perPhase = 0;
+  unsigned maxPhase = 0;
+  SmallVector<unsigned> order;
+  std::optional<SmallVector<unsigned>> CTAsPerCGA;
+  std::optional<SmallVector<unsigned>> CTASplitNum;
+  std::optional<SmallVector<unsigned>> CTAOrder;
+  for (const NamedAttribute &attr : dict) {
+    if (attr.getName() == "vec") {
+      if (parseUInt(parser, attr, vec, "vec").failed())
+        return {};
+    } else if (attr.getName() == "perPhase") {
+      if (parseUInt(parser, attr, perPhase, "perPhase").failed())
+        return {};
+    } else if (attr.getName() == "maxPhase") {
+      if (parseUInt(parser, attr, maxPhase, "maxPhase").failed())
+        return {};
+    } else if (attr.getName() == "order") {
+      if (parseIntArrayAttr(parser, attr, order, "order").failed())
+        return {};
+    } else if (attr.getName() == "CTAsPerCGA") {
+      if (parseIntArrayAttr(parser, attr, CTAsPerCGA.emplace(), "CTAsPerCGA")
+              .failed())
+        return {};
+    } else if (attr.getName() == "CTASplitNum") {
+      if (parseIntArrayAttr(parser, attr, CTASplitNum.emplace(), "CTASplitNum")
+              .failed())
+        return {};
+    } else if (attr.getName() == "CTAOrder") {
+      if (parseIntArrayAttr(parser, attr, CTAOrder.emplace(), "CTAOrder")
+              .failed())
+        return {};
+    } else {
+      parser.emitError(parser.getNameLoc(), "unexpected key: ")
+          << attr.getName().strref();
+      return {};
+    }
+  }
+
+  std::optional<CTALayoutAttr> CTALayout = getCTALayoutOrError(
+      parser, CTAsPerCGA, CTASplitNum, CTAOrder, /*rank=*/order.size());
+  if (!CTALayout.has_value())
+    return {};
+
+  return parser.getChecked<SwizzledBlocksSharedEncodingAttr>(
+      parser.getContext(), vec, perPhase, maxPhase, order, *CTALayout);
+}
+
+void SwizzledBlocksSharedEncodingAttr::print(AsmPrinter &printer) const {
+  printer << "<{"
+          << "vec = " << getVec() //
+          << ", perPhase = " << getPerPhase()
+          << ", maxPhase = " << getMaxPhase() //
+          << ", order = [" << getOrder() << "]";
+  maybePrintCTALayout(getContext(), printer, getCTALayout(),
+                      /*rank=*/getOrder().size());
+  printer << "}>";
 }
 
 //===----------------------------------------------------------------------===//

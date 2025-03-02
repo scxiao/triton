@@ -75,6 +75,11 @@ Attribute createTmpLayout(Attribute layout, ArrayRef<unsigned> warpsPerCTA) {
     return triton::gpu::SliceEncodingAttr::get(
         ctx, src.getDim(), createTmpLayout(src.getParent(), parentWarpsPerCTA));
   }
+
+  // ignore linear layout in this pattern
+  if (auto src = dyn_cast<triton::gpu::LinearEncodingAttr>(layout))
+    return {};  
+
   assert("Encountered unsupported layout");
   return Attribute();
 }

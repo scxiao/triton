@@ -10,6 +10,8 @@
 
 namespace mlir::triton::gpu {
 
+class SwizzledBlocksSharedEncodingAttr;
+
 // - BlockedEncodingAttrs have the following input dimensions.
 //
 //   "register": elements in one thread
