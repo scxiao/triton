@@ -267,7 +267,7 @@ bool emitTransferBetweenRegistersAndShared(
     RankedTensorType registerTy, MemDescType sharedTy, Type elemLlvmTy,
     std::optional<int32_t> maxVecElems, Value shmemBase,
     ArrayRef<Value> shmemStrides, Location loc, RewriterBase &rewriter,
-    const TargetInfoBase &target,
+    const TargetInfoBase &target, bool crossGrain,
     std::function<void(VectorType, Value /*shmemAddr*/)> perVectorCallback) {
   MLIRContext *ctx = rewriter.getContext();
 
@@ -279,8 +279,14 @@ bool emitTransferBetweenRegistersAndShared(
   StringAttr kLane = str_attr("lane");
   StringAttr kWarp = str_attr("warp");
 
-  std::optional<LinearLayout> regLayout =
-      triton::gpu::toLinearLayout(shape, registerTy.getEncoding());
+  std::optional<LinearLayout> regLayout = LinearLayout::empty();
+  auto regEncoding = registerTy.getEncoding();
+  if (crossGrain)
+    regLayout =
+      mlir::triton::gpu::blockedToLinearLayoutThreadRake(shape, regEncoding);
+  else
+    regLayout =
+      triton::gpu::toLinearLayout(shape, regEncoding);
   std::optional<LinearLayout> sharedLayout = triton::gpu::toLinearLayout(
       shape, sharedTy.getEncoding(), elemLlvmTy.getIntOrFloatBitWidth());
   if (!regLayout.has_value() || !sharedLayout.has_value()) {
@@ -384,7 +390,7 @@ SmallVector<Value> loadSharedToDistributed(RankedTensorType dstTy,
   SmallVector<Value> ret;
   bool success = emitTransferBetweenRegistersAndShared(
       dstTy, srcTy, elemLlvmTy, /*maxVecElems=*/std::nullopt, smemObj.getBase(),
-      smemObj.getStrides(), loc, rewriter, target,
+      smemObj.getStrides(), loc, rewriter, target, /*crossGrain=*/false,
       [&](VectorType vecTy, Value vecAddr) {
         auto vecVal = load(vecTy, vecAddr);
         vecVal.setAlignment(vecTy.getNumElements() *
@@ -404,21 +410,46 @@ void storeDistributedToShared(MemDescType dstTy, RankedTensorType srcTy,
                               Type elemLlvmTy, ArrayRef<Value> srcVals,
                               Value smemBase, ArrayRef<Value> dstStrides,
                               Location loc, RewriterBase &rewriter,
-                              const TargetInfoBase &target) {
-  bool success = emitTransferBetweenRegistersAndShared(
-      srcTy, dstTy, elemLlvmTy, /*maxVecElems=*/std::nullopt, smemBase,
-      dstStrides, loc, rewriter, target, [&](VectorType vecTy, Value vecAddr) {
-        ArrayRef<Value> vals = srcVals.take_front(vecTy.getNumElements());
-        srcVals = srcVals.drop_front(vecTy.getNumElements());
+                              const TargetInfoBase &target, bool crossGrain) {
+  bool success;
+  std::function<void(VectorType, Value /*shmemAddr*/)> perVectorCallback;
+  if (!crossGrain) {
+    perVectorCallback = [&](VectorType vecTy, Value vecAddr) {
+          ArrayRef<Value> vals = srcVals.take_front(vecTy.getNumElements());
+          srcVals = srcVals.drop_front(vecTy.getNumElements());
 
-        Value vec = undef(vecTy);
-        for (int i = 0; i < vals.size(); i++) {
-          vec = insert_element(vec, vals[i], i32_val(i));
-        }
-        store(vec, vecAddr)
-            .setAlignment(vecTy.getNumElements() *
-                          elemLlvmTy.getIntOrFloatBitWidth() / 8);
-      });
+          Value vec = undef(vecTy);
+          for (int i = 0; i < vals.size(); i++) {
+            vec = insert_element(vec, vals[i], i32_val(i));
+          }
+          store(vec, vecAddr)
+              .setAlignment(vecTy.getNumElements() *
+                            elemLlvmTy.getIntOrFloatBitWidth() / 8);
+        };
+  } else {
+    auto blockedEncoding = dyn_cast<BlockedEncodingAttr>(srcTy.getEncoding());
+    auto sizePerThread = blockedEncoding.getSizePerThread();
+    auto order = blockedEncoding.getOrder();
+    unsigned int numElementsPerIter = product<unsigned>(sizePerThread);
+    unsigned int val_counter = 0;
+    unsigned int innerVectorization = sizePerThread[order[0]];
+    perVectorCallback = [&](VectorType vecTy, Value vecAddr) {
+          Value vec = undef(vecTy);
+          for (int i = 0; i < vecTy.getNumElements(); i++) {
+              auto idx = val_counter % innerVectorization +
+                  val_counter / innerVectorization * numElementsPerIter +
+                  i*innerVectorization;
+              vec = insert_element(vec, srcVals[idx], i32_val(i));
+          }
+          val_counter++;
+          store(vec, vecAddr)
+              .setAlignment(vecTy.getNumElements() *
+                            elemLlvmTy.getIntOrFloatBitWidth() / 8);
+        };
+  }
+  success = emitTransferBetweenRegistersAndShared(
+        srcTy, dstTy, elemLlvmTy, /*maxVecElems=*/std::nullopt, smemBase,
+        dstStrides, loc, rewriter, target, crossGrain, perVectorCallback);
   if (!success)
     llvm::report_fatal_error("Failed to emit transfer from register to shared");
 }

@@ -276,5 +276,4 @@ void llStore(RewriterBase &rewriter, Location loc, Value ptr, Value val,
       appendOrGetExternFuncOp(rewriter, parent, funcName, funcType);
   LLVM::createLLVMCallOp(rewriter, loc, funcOp, ValueRange({ptr, val, pred}));
 }
-
 } // namespace mlir::LLVM::AMD

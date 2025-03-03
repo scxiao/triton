@@ -246,7 +246,8 @@ compared to 1*64 when the hasLeadingOffset is false.
     "unsigned":$maxPhase,
     ArrayRefParameter<"unsigned">:$order,
     "CTALayoutAttr":$CTALayout,
-    "bool":$hasLeadingOffset
+    "bool":$hasLeadingOffset,
+    "bool":$inThreadTranspose
   );
 
   let builders = [
@@ -256,7 +257,8 @@ compared to 1*64 when the hasLeadingOffset is false.
                      "ArrayRef<unsigned>":$order,
                      "CTALayoutAttr":$CTALayout), [{
         bool hasLeadingOffset = false; // default value
-        return $_get(context, vec, perPhase, maxPhase, order, CTALayout, hasLeadingOffset);
+        bool inThreadTranspose = false; // default value
+        return $_get(context, vec, perPhase, maxPhase, order, CTALayout, hasLeadingOffset, inThreadTranspose);
     }]>,
 
     AttrBuilder<(ins "DotOperandEncodingAttr":$dotOpEnc,
@@ -284,29 +286,33 @@ compared to 1*64 when the hasLeadingOffset is false.
           if (needTrans)
             kDimNum = 1 - kDimNum;
           bool isKDimInner = (order[0] == kDimNum);
+          // if it is K-Outer, we will transpose it during blocked->shared
+          // transfer, so innerDim will still be K but at order[1]
+          unsigned innerDim = isKDimInner ? order[0] : order[1];
+          const int numBanks = 32;
+          const int bankBitWidth = 32;
+          const int SIMDWidth = 16;
+
+          // number of inner dimension rows per one pattern repeat
+          int innerDimLength = shape[innerDim];
+          int elemsPerOneBanksRow = (numBanks * bankBitWidth) / typeWidthInBit;
+
+          int perPhase = std::max(1, elemsPerOneBanksRow / innerDimLength);
+          // vecSize is set to kWidth of the dotop layout
+          int vecSize = dotOpEnc.getKWidth();
+          int maxPhase = std::min(SIMDWidth / perPhase, innerDimLength / vecSize);
+
+          // TODO (zhanglx): figure out better parameters for mfma4
+          if (mfmaEnc.getMDim() == 4)
+            maxPhase = 4;
+
           if (isKDimInner) {
-            const int numBanks = 32;
-            const int bankBitWidth = 32;
-            const int SIMDWidth = 16;
-
-            // number of inner dimension rows per one pattern repeat
-            int innerDimLength = shape[order[0]];
-            int elemsPerOneBanksRow = (numBanks * bankBitWidth) / typeWidthInBit;
-
-            int perPhase = std::max(1, elemsPerOneBanksRow / innerDimLength);
-            // vecSize is set to kWidth of the dotop layout
-            int vecSize = dotOpEnc.getKWidth();
-            int maxPhase = std::min(SIMDWidth / perPhase, innerDimLength / vecSize);
-
-            // TODO (zhanglx): figure out better parameters for mfma4
-            if (mfmaEnc.getMDim() == 4)
-              maxPhase = 4;
-
             return get(context, vecSize, perPhase, maxPhase, order, CTALayout);
           } else {
-            // Do not swizzle in case k dimension is not innermost.
-            // In this case accesses will go in different banks even without swizzling.
-            return get(context, 1, 1, 1, order, CTALayout);
+            SmallVector<unsigned int> newOrder(order);
+            std::swap(newOrder[0], newOrder[1]);
+            // set inThreadTranspose to true since we want to use special swizzling
+            return $_get(context, vecSize, perPhase, maxPhase, newOrder, CTALayout, false, true);
           }
         }
 
@@ -401,7 +407,7 @@ compared to 1*64 when the hasLeadingOffset is false.
         if (mmaEnc.isHopper()) {
           llvm_unreachable("SharedEncodingAttr builder when the MMAEncodingAttr"
                            " is Hopper has not been implemented yet");
-          return $_get(context, 1, 1, 1, order, CTALayout, true);
+          return $_get(context, 1, 1, 1, order, CTALayout, true, false);
         }
 
         // ---- not implemented ----
@@ -452,7 +458,7 @@ compared to 1*64 when the hasLeadingOffset is false.
           llvm_unreachable("unsupported shared memory layout for MMAv3");
         }
 
-        return $_get(context, vec, perPhase, maxPhase, order, CTALayout, true);
+        return $_get(context, vec, perPhase, maxPhase, order, CTALayout, true, false);
     }]>
   ];
 

@@ -77,6 +77,45 @@ LinearLayout identityND(StringAttr inDimName, ArrayRef<unsigned> shape,
   return ret;
 }
 
+// Returns 2D layout that traverses the 2nd leading dimension first and then
+// 1st leading dimension. Only supports 2D layout for now.
+LinearLayout transposeND(StringAttr inDimName, ArrayRef<unsigned> shape,
+                        ArrayRef<unsigned> order,
+                        ArrayRef<StringAttr> outDimNames) {
+  assert(shape.size() == order.size());
+  assert((order.size() == 2) && "only support dim of 2 now");
+
+  MLIRContext *ctx = inDimName.getContext();
+  StringAttr kRegister = S("register");
+  StringAttr kDim0 = S("dim0");
+  StringAttr kDim1 = S("dim1");
+
+  LinearLayout ret = LinearLayout::empty();
+  std::vector<std::vector<int32_t>> bases;
+  // traverse 2nd dimension (K-dim in GEMM case)
+  int dim = order[1];
+  for (int basis = 1; basis < shape[dim]; basis <<= 1) {
+    bases.push_back({0, basis});
+  }
+  // traverse 1st dimension (N-dim in GEMM K-major B-tensor)
+  // this is the consecutive dimension loaded from global memory
+  dim = order[0];
+  for (int basis = 1; basis < shape[dim]; basis <<= 1) {
+    bases.push_back({basis, 0});
+  }
+  auto dimMinor = "dim"+std::to_string(order[0]);
+  auto dimMajor = "dim"+std::to_string(order[1]);
+  StringAttr kDimMinor = S(dimMinor);
+  StringAttr kDimMajor = S(dimMajor);
+  ret = LinearLayout(
+        {{kRegister, bases}},
+        {{kDimMinor, shape[order[0]]},
+         {kDimMajor, shape[order[1]]}},
+        false);
+
+  return ret;
+}
+
 // Make a LinearLayout that maps a block-id to an N-dimensional index.
 //
 // The tensor is split up into CTAsPerCGA pieces, which are distributed among
@@ -243,6 +282,7 @@ LinearLayout combineCtaCgaWithShape(LinearLayout ctaLayout,
   llvm::SmallDenseMap<StringAttr, int64_t> labeledShape;
   for (auto [dim, size] : llvm::zip(outDimNames, shape)) {
     labeledShape[dim] = size;
+    // llvm::outs() << "labeledShape[" << dim << "] = " << labeledShape[dim] << "\n";
   }
 
   LinearLayout cgaLayout =
@@ -257,10 +297,13 @@ LinearLayout combineCtaCgaWithShape(LinearLayout ctaLayout,
   for (auto dim : ctaLayout.getOutDimNames()) {
     ctaShape[dim] =
         std::max(int64_t{1}, labeledShape[dim] / cgaLayout.getOutDimSize(dim));
+    // llvm::outs() << "ctaShape[" << dim << "] = " << ctaShape[dim] << "\n";
   }
 
   ctaLayout = ensureLayoutNotSmallerThan(ctaLayout, ctaShape);
+  // llvm::outs() << "after ensureLayoutNotSmallerThan" << ctaLayout << "\n";
   ctaLayout = ensureLayoutNotLargerThan(ctaLayout, ctaShape);
+  // llvm::outs() << "after ensureLayoutNotLargerThan" << ctaLayout << "\n";
 
   LinearLayout ret = (ctaLayout * cgaLayout).transposeOuts(outDimNames);
   for (auto dim : ret.getOutDimNames()) {
@@ -346,6 +389,7 @@ LinearLayout sharedToLinearLayoutNoLeadingOffset(ArrayRef<int64_t> shape,
   }
 
   auto outDimNames = standardOutDimNames(ctx, rank);
+  bool inThreadTranspose = shared.getInThreadTranspose();
 
   // Construct bases for the 2 most minor dimensions of the layout.  These are
   // the dims that get swizzled.
@@ -366,7 +410,13 @@ LinearLayout sharedToLinearLayoutNoLeadingOffset(ArrayRef<int64_t> shape,
     int vec = shared.getVec();
     int perPhase = shared.getPerPhase();
     int maxPhase = shared.getMaxPhase();
-    bases2D.push_back({row, (vec * ((row / perPhase) % maxPhase)) % numCols});
+    int phase = (row / perPhase) % maxPhase;
+    // AMD special swizzling for K-major matrix. We switch up swizzling pattern
+    // every perPhase*maxPhase rows to reduce write bank conflict
+    if (inThreadTranspose) {
+      phase = (phase ^ row / maxPhase / perPhase) % maxPhase;
+    }
+    bases2D.push_back({row, (vec * phase) % numCols});
   }
   LinearLayout ctaLayout =
       LinearLayout({{S("offset"), bases2D}}, {rowDimName, colDimName});
@@ -548,6 +598,29 @@ AMDMfmaEncodingAttr::toLinearLayout(ArrayRef<int64_t> shape) const {
   LinearLayout ctaLayout = tileLayout * warpLayout;
 
   return combineCtaCgaWithShape(ctaLayout, getCTALayout(), shape);
+}
+
+std::optional<LinearLayout> blockedToLinearLayoutThreadRake(
+    ArrayRef<int64_t> shape, Attribute blockedAttr) {
+  auto blocked = dyn_cast<BlockedEncodingAttr>(blockedAttr);
+  if (!blocked)
+    return std::nullopt;
+
+  MLIRContext *ctx = blocked.getContext();
+  int rank = shape.size();
+  auto outDimNames = standardOutDimNames(ctx, rank);
+
+  const auto &order = blocked.getOrder();
+
+  auto sizePerThread = blocked.getSizePerThread();
+  // if (llvm::any_of(sizePerThread, [](int32_t s) { return s == 1; }))
+  //   return blocked.toLinearLayout(shape);
+  auto ctaLayout =
+      transposeND(S("register"), sizePerThread, order, outDimNames) *
+      identityND(S("lane"), blocked.getThreadsPerWarp(), order, outDimNames) *
+      identityND(S("warp"), blocked.getWarpsPerCTA(), order, outDimNames);
+
+  return combineCtaCgaWithShape(ctaLayout, blocked.getCTALayout(), shape);
 }
 
 std::optional<LinearLayout>
@@ -752,11 +825,14 @@ BlockedEncodingAttr::toLinearLayout(ArrayRef<int64_t> shape) const {
   SmallVector<StringAttr> outDimNames = standardOutDimNames(ctx, rank);
 
   const auto &order = getOrder();
+
+  auto sizePerThread = this->getSizePerThread();
+  auto threadsPerWarp = this->getThreadsPerWarp();
+  auto warpsPerCTA = this->getWarpsPerCTA();
   LinearLayout ctaLayout =
       identityND(S("register"), getSizePerThread(), order, outDimNames) *
       identityND(S("lane"), getThreadsPerWarp(), order, outDimNames) *
       identityND(S("warp"), getWarpsPerCTA(), order, outDimNames);
-
   return combineCtaCgaWithShape(ctaLayout, getCTALayout(), shape);
 }
 

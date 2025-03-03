@@ -57,6 +57,9 @@ class HIPOptions:
     # The option is experimental and may change at any time regarding its semantics and/or may
     # be gone entirely anytime.
     instruction_sched_variant: str = 'default'
+    # The following option is an experimental option to control optimization of shared memory accesses.
+    # Will be removed when proper heuristic is implemented.
+    enable_thread_rake: bool = False
 
     def __post_init__(self):
         default_libdir = Path(__file__).parent / 'lib'
@@ -217,6 +220,10 @@ class HIPBackend(BaseBackend):
         passes.ttgpuir.add_optimize_thread_locality(pm)
         amd.passes.ttgpuir.add_accelerate_matmul(pm, options.arch, options.matrix_instr_nonkdim, options.kpack)
         passes.ttgpuir.add_remove_layout_conversions(pm)
+        if options.enable_thread_rake:
+            print("called inthreadtranspose---------")
+            amd.passes.ttgpuir.add_in_thread_tranpose(pm)
+            passes.ttgpuir.add_remove_layout_conversions(pm)
         amd.passes.ttgpuir.add_optimize_epilogue(pm)
         passes.ttgpuir.add_optimize_dot_operands(pm, True)
         if amd.has_matrix_core_feature(options.arch):
