@@ -762,7 +762,6 @@ Value generatePopcount64(PatternRewriter &rewriter, Value val) {
 
 Value genReadFirstLane(PatternRewriter &rewriter, Value v) {
   auto loc = v.getLoc();
-  auto b = TritonLLVMOpBuilder(loc, rewriter);
   std::string intrinsic = "llvm.amdgcn.readfirstlane";
   return LLVM::createLLVMIntrinsicCallOp(rewriter, loc, intrinsic, i32_ty, v)
       ->getResult(0);
@@ -807,42 +806,41 @@ Value genI32TiledOp(PatternRewriter &rewriter, Generator genCall,
 
 Value genPrefixSum(PatternRewriter &rewriter, Value v0) {
   auto loc = v0.getLoc();
-  auto b = TritonLLVMOpBuilder(loc, rewriter);
-  Value old = b.i32_val(0);
+  Value old = i32_val(0);
 
   Value v1 = v0;
   // v_add_f32 v1, v0, v0 row_shr:1 bound_ctrl:0
   Value tmp = rewriter.create<ROCDL::DPPUpdateOp>(loc, i32_ty, old, v0, 0x111,
                                                   0xF, 0xF, false);
-  v1 = b.add(v1, tmp);
+  v1 = add(v1, tmp);
   // v_add_f32 v1, v0, v1 row_shr:2 bound_ctrl:0
   tmp = rewriter.create<ROCDL::DPPUpdateOp>(loc, i32_ty, old, v0, 0x112, 0xF,
                                             0xF, false);
-  v1 = b.add(v1, tmp);
+  v1 = add(v1, tmp);
   // v_add_f32 v1, v0, v1 row_shr:3 bound_ctrl:0
   tmp = rewriter.create<ROCDL::DPPUpdateOp>(loc, i32_ty, old, v0, 0x113, 0xF,
                                             0xF, false);
-  v1 = b.add(v1, tmp);
+  v1 = add(v1, tmp);
 
   // v_add_f32 v1, v1, v1 row_shr:4 bank_mask:0xe
   tmp = rewriter.create<ROCDL::DPPUpdateOp>(loc, i32_ty, old, v1, 0x114, 0xF,
                                             0xE, true);
-  v1 = b.add(v1, tmp);
+  v1 = add(v1, tmp);
 
   // v_add_f32 v1, v1, v1 row_shr:8 bank_mask:0xc
   tmp = rewriter.create<ROCDL::DPPUpdateOp>(loc, i32_ty, old, v1, 0x118, 0xF,
                                             0xC, true);
-  v1 = b.add(v1, tmp);
+  v1 = add(v1, tmp);
 
   // v_add_f32 v1, v1, v1 row_bcast:15 row_mask:0xa
   tmp = rewriter.create<ROCDL::DPPUpdateOp>(loc, i32_ty, old, v1, 0x142, 0xA,
                                             0xF, true);
-  v1 = b.add(v1, tmp);
+  v1 = add(v1, tmp);
 
   // v_add_f32 v1, v1, v1 row_bcast:31 row_mask:0xc
   tmp = rewriter.create<ROCDL::DPPUpdateOp>(loc, i32_ty, old, v1, 0x143, 0xC,
                                             0xF, true);
-  v1 = b.add(v1, tmp);
+  v1 = add(v1, tmp);
 
   return v1;
 }
@@ -962,12 +960,13 @@ struct AtomicRMWOpConversion
       // mask
       numElems = tensorTy.getNumElements();
     }
-    Value mask = b.true_val();
+    Value mask = true_val();
     auto tid = getThreadId(rewriter, loc);
-    mask = b.and_(mask, b.icmp_slt(b.mul(tid, b.i32_val(elemsPerThread)),
-                                   b.i32_val(numElems)));
+    mask = and_(mask, icmp_slt(mul(tid, i32_val(elemsPerThread)),
+                                   i32_val(numElems)));
 
     auto memOrdering = op.getSem();
+    auto scope = op.getScope();
     auto atomicMemOrdering = getMemoryOrdering(memOrdering);
 
     std::optional<const char *> scopeStr = getAMDGPUMemScopeStr(scope);
@@ -985,26 +984,26 @@ struct AtomicRMWOpConversion
       // elemsPerThread.
       Value rmwMask = llMask ? and_(mask, maskElements[i]) : mask;
 
-      Value i64Ones = b.i64_val(~uint64_t(0));
-      Value i64Zeros = b.i64_val(0);
+      Value i64Ones = i64_val(~uint64_t(0));
+      Value i64Zeros = i64_val(0);
       Value operand;
       Value rightNeighbourPtr;
       Value enablePackedOpt;
       if (useDppForPackedF16) {
-        Value isOddI32 = b.urem(tid, b.i32_val(2));
+        Value isOddI32 = urem(tid, i32_val(2));
         // First check if odd threads hold adjacent ptrs to even ones.
-        Value castedAddr = b.ptrtoint(i64_ty, rmwPtr);
+        Value castedAddr = ptrtoint(i64_ty, rmwPtr);
         // Set casted addr to all ones if the thread is disabled.
-        castedAddr = b.select(rmwMask, castedAddr, i64Ones);
+        castedAddr = select(rmwMask, castedAddr, i64Ones);
 
         // Move %val to left neighbour to proceed packed atomic further.
-        Value packedVal = b.null(packF16Ty);
+        Value packedVal = null(packF16Ty);
         packedVal =
-            b.insert_element(packF16Ty, packedVal, valElements[i], isOddI32);
+            insert_element(packF16Ty, packedVal, valElements[i], isOddI32);
         // Pack to i32 type to simplify transaction.
-        packedVal = b.bitcast(packedVal, i32_ty);
+        packedVal = bitcast(packedVal, i32_ty);
         // Zero operands for disabled threads to make addition no op.
-        packedVal = b.select(rmwMask, packedVal, b.i32_val(0));
+        packedVal = select(rmwMask, packedVal, i32_val(0));
         Value dppMoveRes = shiftLeftI32ByDpp(rewriter, packedVal);
 
         Value rightNeighbourAddr =
@@ -1015,29 +1014,29 @@ struct AtomicRMWOpConversion
         // 2. right neighbour has adjacent address
         // 3. both threads are active
         Value isAligned =
-            b.icmp_eq(b.urem(castedAddr, b.i64_val(4)), b.i64_val(0));
-        Value neighbourAddrAdjacent = b.icmp_eq(
+            icmp_eq(urem(castedAddr, i64_val(4)), i64_val(0));
+        Value neighbourAddrAdjacent = icmp_eq(
             rightNeighbourAddr,
-            b.add(castedAddr,
-                  b.i64_val(valueElemTy.getIntOrFloatBitWidth() / 8)));
-        Value neighbourEnabled = b.icmp_ne(i64Ones, rightNeighbourAddr);
-        Value bothEnabled = b.and_(neighbourEnabled, rmwMask);
+            add(castedAddr,
+                  i64_val(valueElemTy.getIntOrFloatBitWidth() / 8)));
+        Value neighbourEnabled = icmp_ne(i64Ones, rightNeighbourAddr);
+        Value bothEnabled = and_(neighbourEnabled, rmwMask);
         enablePackedOpt =
-            b.and_(b.and_(isAligned, bothEnabled), neighbourAddrAdjacent);
+            and_(and_(isAligned, bothEnabled), neighbourAddrAdjacent);
 
         // Enable only the even threads.
-        Value anyEnabled = b.or_(neighbourEnabled, rmwMask);
+        Value anyEnabled = or_(neighbourEnabled, rmwMask);
         // If one of the threads is disabled, use the neighbour's addr.
         rightNeighbourAddr =
-            b.select(neighbourEnabled, rightNeighbourAddr, castedAddr);
-        castedAddr = b.select(rmwMask, castedAddr, rightNeighbourAddr);
+            select(neighbourEnabled, rightNeighbourAddr, castedAddr);
+        castedAddr = select(rmwMask, castedAddr, rightNeighbourAddr);
 
-        rmwMask = b.and_(anyEnabled, b.icmp_eq(isOddI32, b.i32_val(0)));
+        rmwMask = and_(anyEnabled, icmp_eq(isOddI32, i32_val(0)));
 
         // Unpack results back
-        rightNeighbourPtr = b.inttoptr(rmwPtr.getType(), rightNeighbourAddr);
-        rmwPtr = b.inttoptr(rmwPtr.getType(), castedAddr);
-        operand = b.bitcast(b.or_(packedVal, dppMoveRes), packF16Ty);
+        rightNeighbourPtr = inttoptr(rmwPtr.getType(), rightNeighbourAddr);
+        rmwPtr = inttoptr(rmwPtr.getType(), castedAddr);
+        operand = bitcast(or_(packedVal, dppMoveRes), packF16Ty);
       } else if (vec == 1) {
         operand = valElements[i];
       } else {
@@ -1066,26 +1065,26 @@ struct AtomicRMWOpConversion
       // 4. Call ds_permute to move active lanes to the beginning of a wave
       // 5. Update mask of each lane
       if (enableIntraWaveReduce) {
-        Value maskI32 = b.zext(i32_ty, rmwMask);
+        Value maskI32 = zext(i32_ty, rmwMask);
         Value offset = genPrefixSum(rewriter, maskI32);
-        offset = b.mul(offset, maskI32);
+        offset = mul(offset, maskI32);
         auto layout = tensorTy.getEncoding();
-        Value waveSize = b.i32_val(triton::gpu::getWarpSize(layout));
-        offset = b.select(b.icmp_eq(offset, b.i32_val(0)), waveSize, offset);
-        Value idx = b.sub(offset, b.i32_val(1));
-        idx = b.mul(idx, b.i32_val(4));
+        Value waveSize = i32_val(triton::gpu::getWarpSize(layout));
+        offset = select(icmp_eq(offset, i32_val(0)), waveSize, offset);
+        Value idx = sub(offset, i32_val(1));
+        idx = mul(idx, i32_val(4));
         operand = genI32TiledOp(rewriter, genPermute, operand, idx);
-        Value castedAddr = b.ptrtoint(i64_ty, rmwPtr);
+        Value castedAddr = ptrtoint(i64_ty, rmwPtr);
         castedAddr = genI32TiledOp(rewriter, genPermute, castedAddr, idx);
-        rmwPtr = b.inttoptr(rmwPtr.getType(), castedAddr);
+        rmwPtr = inttoptr(rmwPtr.getType(), castedAddr);
 
         // update mask
         Value maskFlag = targetInfo.ballot(rewriter, loc, i64_ty, rmwMask);
         Value numActiveLanes =
-            b.trunc(i32_ty, generatePopcount64(rewriter, maskFlag));
+            trunc(i32_ty, generatePopcount64(rewriter, maskFlag));
 
-        Value laneID = b.urem(tid, waveSize);
-        rmwMask = b.icmp_ult(laneID, numActiveLanes);
+        Value laneID = urem(tid, waveSize);
+        rmwMask = icmp_ult(laneID, numActiveLanes);
       }
       rewriter.create<LLVM::CondBrOp>(loc, rmwMask, atomicBlock, endBlock,
                                       undefVal);
@@ -1113,20 +1112,20 @@ struct AtomicRMWOpConversion
           // Fill out the regular block, where we issue two atomic ops.
           rewriter.setInsertionPointToEnd(regularBlock);
           Value pairedOperand0 =
-              b.extract_element(valueElemTy, operand, b.i32_val(0));
+              extract_element(valueElemTy, operand, i32_val(0));
           Value pairedOperand1 =
-              b.extract_element(valueElemTy, operand, b.i32_val(1));
+              extract_element(valueElemTy, operand, i32_val(1));
           Value atomNonVec0 = rewriter.create<LLVM::AtomicRMWOp>(
               loc, *maybeKind, rmwPtr, pairedOperand0, atomicMemOrdering,
               *scopeStr);
           Value atomNonVec1 = rewriter.create<LLVM::AtomicRMWOp>(
               loc, *maybeKind, rightNeighbourPtr, pairedOperand1,
               atomicMemOrdering, *scopeStr);
-          Value packedRes = b.undef(packF16Ty);
+          Value packedRes = undef(packF16Ty);
           packedRes =
-              b.insert_element(packF16Ty, packedRes, atomNonVec0, b.i32_val(0));
+              insert_element(packF16Ty, packedRes, atomNonVec0, i32_val(0));
           packedRes =
-              b.insert_element(packF16Ty, packedRes, atomNonVec1, b.i32_val(1));
+              insert_element(packF16Ty, packedRes, atomNonVec1, i32_val(1));
           rewriter.create<LLVM::BrOp>(loc, packedRes, endBlock);
 
           // Start to fill out the packed block.
@@ -1242,15 +1241,15 @@ private:
     // check how many adjacent address are in the wave
     Value rightNeighbourAddr =
         genI32TiledOp(rewriter, shiftLeftI32ByDpp, rmwPtr);
-    Value elemSize = b.i64_val(operandElemType.getIntOrFloatBitWidth() / 8);
-    Value isNeighbour = b.icmp_eq(rightNeighbourAddr, b.add(rmwPtr, elemSize));
+    Value elemSize = i64_val(operandElemType.getIntOrFloatBitWidth() / 8);
+    Value isNeighbour = icmp_eq(rightNeighbourAddr, add(rmwPtr, elemSize));
     Value neighbourFlag = targetInfo.ballot(rewriter, loc, i64_ty, isNeighbour);
     Value numNeighbours =
-        b.trunc(i32_ty, generatePopcount64(rewriter, neighbourFlag));
+        trunc(i32_ty, generatePopcount64(rewriter, neighbourFlag));
     // Heuristic that atomic_add is optimizated only if the number of
     // neighbouring addresses in a wave is less than 32.
     // TODO: Calculate actual number of difference addresses in a wave.
-    Value optAtomic = b.icmp_ult(numNeighbours, b.i32_val(32));
+    Value optAtomic = icmp_ult(numNeighbours, i32_val(32));
 
     rewriter.create<LLVM::CondBrOp>(loc, optAtomic, initLoop, atomicBlock,
                                     ValueRange({rmwPtr, operand}));
@@ -1266,7 +1265,7 @@ private:
     loopBody->addArgument(i32_ty, loc);
 
     rewriter.setInsertionPointToEnd(initLoop);
-    rewriter.create<LLVM::BrOp>(loc, b.i32_val(0), loopBody);
+    rewriter.create<LLVM::BrOp>(loc, i32_val(0), loopBody);
 
     // Greed search of same addr within wavefront. Also collect auxiliary
     // information about relative position:
@@ -1386,7 +1385,7 @@ private:
     endBlock->addArgument(operandElemType, loc);
     rewriter.setInsertionPointToEnd(afterRedBlock);
     Value leaderCond = leaderRes;
-    Value defaultRes = b.undef(operandElemType);
+    Value defaultRes = undef(operandElemType);
     rewriter.create<LLVM::CondBrOp>(
         loc, leaderCond, atomicBlock,
         ValueRange({rmwPtr, afterRedBlock->getArgument(0)}), endBlock,
@@ -1394,7 +1393,7 @@ private:
     rewriter.setInsertionPointToEnd(atomicBlock);
     // Utilize global atomic only by leader threads
     Value addr = atomicBlock->getArgument(0);
-    Value atomAddr = b.inttoptr(origPtrType, addr);
+    Value atomAddr = inttoptr(origPtrType, addr);
     Value atom = rewriter.create<LLVM::AtomicRMWOp>(
         loc, opKind, atomAddr, atomicBlock->getArgument(1), memOrdering, scope);
     rewriter.create<LLVM::BrOp>(loc, atom, endBlock);

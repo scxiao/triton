@@ -426,6 +426,9 @@ void storeDistributedToShared(MemDescType dstTy, RankedTensorType srcTy,
               .setAlignment(vecTy.getNumElements() *
                             elemLlvmTy.getIntOrFloatBitWidth() / 8);
         };
+    success = emitTransferBetweenRegistersAndShared(
+          srcTy, dstTy, elemLlvmTy, /*maxVecElems=*/std::nullopt, smemBase,
+          dstStrides, loc, rewriter, target, crossGrain, perVectorCallback);
   } else {
     auto blockedEncoding = dyn_cast<BlockedEncodingAttr>(srcTy.getEncoding());
     auto sizePerThread = blockedEncoding.getSizePerThread();
@@ -446,10 +449,11 @@ void storeDistributedToShared(MemDescType dstTy, RankedTensorType srcTy,
               .setAlignment(vecTy.getNumElements() *
                             elemLlvmTy.getIntOrFloatBitWidth() / 8);
         };
+
+    success = emitTransferBetweenRegistersAndShared(
+          srcTy, dstTy, elemLlvmTy, /*maxVecElems=*/std::nullopt, smemBase,
+          dstStrides, loc, rewriter, target, crossGrain, perVectorCallback);
   }
-  success = emitTransferBetweenRegistersAndShared(
-        srcTy, dstTy, elemLlvmTy, /*maxVecElems=*/std::nullopt, smemBase,
-        dstStrides, loc, rewriter, target, crossGrain, perVectorCallback);
   if (!success)
     llvm::report_fatal_error("Failed to emit transfer from register to shared");
 }
