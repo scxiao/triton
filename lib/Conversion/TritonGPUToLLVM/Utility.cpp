@@ -281,19 +281,17 @@ bool emitTransferBetweenRegistersAndShared(
 
   std::optional<LinearLayout> regLayout = LinearLayout::empty();
   auto regEncoding = registerTy.getEncoding();
-  llvm::outs() << "regEncoding = " << regEncoding << "\n";
-  llvm::outs() << "shape = {" << shape[0] << ", " << shape[1] << "}\n";
   if (crossGrain) {
     regLayout =
       mlir::triton::gpu::blockedToLinearLayoutThreadRake(shape, regEncoding);
-    regLayout.value().printLayoutInfo("ThreadRakeRegLayout");
+    // regLayout.value().printLayoutInfo("ThreadRakeRegLayout");
     std::optional<LinearLayout> tmpRegLayout = triton::gpu::toLinearLayout(shape, regEncoding);
-    tmpRegLayout.value().printLayoutInfo("RegForThreadLayout");
+    // tmpRegLayout.value().printLayoutInfo("RegForThreadLayout");
   }
   else {
     regLayout =
       triton::gpu::toLinearLayout(shape, regEncoding);
-    regLayout.value().printLayoutInfo("regularRegLayout");
+    // regLayout.value().printLayoutInfo("regularRegLayout");
   }
   std::optional<LinearLayout> sharedLayout = triton::gpu::toLinearLayout(
       shape, sharedTy.getEncoding(), elemLlvmTy.getIntOrFloatBitWidth());
