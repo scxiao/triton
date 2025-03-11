@@ -30,6 +30,9 @@ swizzleIndexes(ConversionPatternRewriter &rewriter, Location loc, Value row,
     // tensor is column-wise, so swapping col and row in computations
     std::swap(row, col);
   }
+
+  llvm::outs() << "swizzleIndexes, vec = " << attr.getVec() << ", perPhase = " << attr.getPerPhase() << ", maxPhase = " << attr.getMaxPhase() << "\n";
+
   auto vec = i32_val(attr.getVec());
   auto perPhase = i32_val(attr.getPerPhase());
   auto maxPhase = i32_val(attr.getMaxPhase());
@@ -46,7 +49,8 @@ swizzleIndexes(ConversionPatternRewriter &rewriter, Location loc, Value row,
   if (inThreadTranspose) {
     // phase = (phase + row / maxPhase / perPhase) % maxPhase;
     auto rotation = udiv(row, mul(perPhase, maxPhase));
-    colOffSwizzled = mul(xor_(udiv(col, vec), xor_(phase, rotation)), vec);
+    colOffSwizzled = mul(xor_(udiv(col, vec), urem(xor_(phase, rotation), maxPhase)), vec);
+    // colOffSwizzled = mul(xor_(udiv(col, vec), xor_(phase, rotation)), vec);
   } else {
     colOffSwizzled = mul(xor_(udiv(col, vec), phase), vec);
   }

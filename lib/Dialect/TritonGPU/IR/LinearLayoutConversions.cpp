@@ -402,6 +402,7 @@ LinearLayout sharedToLinearLayoutNoLeadingOffset(ArrayRef<int64_t> shape,
   StringAttr rowDimName = outDimNames[rowDim];
 
   std::vector<std::vector<int>> bases2D;
+  llvm::outs() << "numRows = " << numRows << ", numCols = " << numCols << "\n";
   for (int logCol = 0; logCol < llvm::Log2_32(numCols); logCol++) {
     bases2D.push_back({0, 1 << logCol});
   }
@@ -411,11 +412,13 @@ LinearLayout sharedToLinearLayoutNoLeadingOffset(ArrayRef<int64_t> shape,
     int perPhase = shared.getPerPhase();
     int maxPhase = shared.getMaxPhase();
     int phase = (row / perPhase) % maxPhase;
+    llvm::outs() << "<<< row = " << row << ", vec = " << vec << ", perPhase = " << perPhase << ", maxPhase = " << maxPhase << ", phase = " << phase << "\n";
     // AMD special swizzling for K-major matrix. We switch up swizzling pattern
     // every perPhase*maxPhase rows to reduce write bank conflict
     if (inThreadTranspose) {
       phase = (phase ^ row / maxPhase / perPhase) % maxPhase;
     }
+    llvm::outs() << "    row = " << row << ", phase = " << phase << ", idx = " << (vec * phase) % numCols << "\n";
     bases2D.push_back({row, (vec * phase) % numCols});
   }
   LinearLayout ctaLayout =
