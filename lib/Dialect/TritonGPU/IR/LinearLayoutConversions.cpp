@@ -412,17 +412,28 @@ LinearLayout sharedToLinearLayoutNoLeadingOffset(ArrayRef<int64_t> shape,
     int perPhase = shared.getPerPhase();
     int maxPhase = shared.getMaxPhase();
     int phase = (row / perPhase) % maxPhase;
-    llvm::outs() << "<<< row = " << row << ", vec = " << vec << ", perPhase = " << perPhase << ", maxPhase = " << maxPhase << ", phase = " << phase << "\n";
+    // llvm::outs() << "<<< row = " << row << ", vec = " << vec << ", perPhase = " << perPhase << ", maxPhase = " << maxPhase << ", phase = " << phase << "\n";
     // AMD special swizzling for K-major matrix. We switch up swizzling pattern
     // every perPhase*maxPhase rows to reduce write bank conflict
     if (inThreadTranspose) {
       phase = (phase ^ row / maxPhase / perPhase) % maxPhase;
     }
-    llvm::outs() << "    row = " << row << ", phase = " << phase << ", idx = " << (vec * phase) % numCols << "\n";
+    // llvm::outs() << "    row = " << row << ", phase = " << phase << ", idx = " << (vec * phase) % numCols << "\n";
     bases2D.push_back({row, (vec * phase) % numCols});
   }
   LinearLayout ctaLayout =
       LinearLayout({{S("offset"), bases2D}}, {rowDimName, colDimName});
+  ctaLayout.printLayoutInfo("ctaLayout");
+
+  // test code
+  if (inThreadTranspose) {
+    llvm::outs() << "----------------Swizze_output----------\n";
+    for (int i = 0; i < 2048; ++i) {
+      SmallVector<std::pair<StringAttr, int32_t>> ins = {{S("offset"), i}};
+      auto outs = ctaLayout.apply(ins);
+      llvm::outs() << outs[0].second << "\t" << outs[1].second << "\n";
+    }
+  }
 
   // Add the remaining dimensions.
   for (int i = 2; i < rank; i++) {
@@ -431,7 +442,11 @@ LinearLayout sharedToLinearLayoutNoLeadingOffset(ArrayRef<int64_t> shape,
         LinearLayout::identity1D(shape[dim], S("offset"), outDimNames[dim]);
   }
 
-  return combineCtaCgaWithShape(ctaLayout, shared.getCTALayout(), shape);
+  auto tmp = combineCtaCgaWithShape(ctaLayout, shared.getCTALayout(), shape);
+  llvm::outs() << "tmpLinearLayout, inThreadTranspose = " << inThreadTranspose << "\n";
+  tmp.printLayoutInfo("tmpLinearLayout");
+
+  return tmp;
 }
 
 LinearLayout sharedToLinearLayoutLeadingOffset(ArrayRef<int64_t> shape,

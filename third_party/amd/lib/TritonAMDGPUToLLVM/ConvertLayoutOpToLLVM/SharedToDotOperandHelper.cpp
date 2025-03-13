@@ -45,15 +45,14 @@ swizzleIndexes(ConversionPatternRewriter &rewriter, Location loc, Value row,
   // colOffOrdered = col % vec
   // colOff = colOffSwizzled + colOffOrdered
   auto phase = urem(udiv(row, perPhase), maxPhase);
-  mlir::LLVM::MulOp colOffSwizzled;
+  Value colOffSwizzled;
+  llvm::outs() << "swizzleIndexes, inThreadTranspose = " << inThreadTranspose << "\n";
   if (inThreadTranspose) {
-    // phase = (phase + row / maxPhase / perPhase) % maxPhase;
-    auto rotation = udiv(row, mul(perPhase, maxPhase));
-    colOffSwizzled = mul(xor_(udiv(col, vec), urem(xor_(phase, rotation), maxPhase)), vec);
-    // colOffSwizzled = mul(xor_(udiv(col, vec), xor_(phase, rotation)), vec);
-  } else {
-    colOffSwizzled = mul(xor_(udiv(col, vec), phase), vec);
+    // phase = (phase ^ row / maxPhase / perPhase) % maxPhase;
+    auto rotation = udiv(udiv(row, maxPhase), perPhase);
+    phase = urem(xor_(phase, rotation), maxPhase);
   }
+  colOffSwizzled = mul(xor_(udiv(col, vec), phase), vec);
   auto colOffOrdered = urem(col, vec);
   auto colOff = add(colOffSwizzled, colOffOrdered);
 
@@ -208,6 +207,8 @@ llvm::SmallVector<Value> computeOffsetsBType(
   SmallVector<int64_t> tReps = transposeSpatialDims(reps);
   SmallVector<Value> tOffsets = transposeSpatialDims(smemObj.getOffsets());
   SmallVector<Value> tStrides = transposeSpatialDims(smemObj.getStrides());
+
+  // llvm::outs() << "bType, reps = {" << reps[0] << ", " << reps[1] << "}\n";
 
   int vectorSize = 1;
   if (srcLayout.getOrder()[0] == rank - 2) {
