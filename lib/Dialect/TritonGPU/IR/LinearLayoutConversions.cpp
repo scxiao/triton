@@ -90,6 +90,9 @@ LinearLayout transposeND(StringAttr inDimName, ArrayRef<unsigned> shape,
   StringAttr kDim0 = S("dim0");
   StringAttr kDim1 = S("dim1");
 
+  llvm::outs() << "transposeND, order = {" << order[0] << ", " << order[1] << "}\n";
+  llvm::outs() << "transposeND, shape = {" << shape[0] << ", " << shape[1] << "}\n";
+
   LinearLayout ret = LinearLayout::empty();
   std::vector<std::vector<int32_t>> bases;
   // traverse 2nd dimension (K-dim in GEMM case)
@@ -112,6 +115,8 @@ LinearLayout transposeND(StringAttr inDimName, ArrayRef<unsigned> shape,
         {{kDimMinor, shape[order[0]]},
          {kDimMajor, shape[order[1]]}},
         false);
+
+  ret.printLayoutInfo("transposeND");
 
   return ret;
 }
@@ -412,28 +417,29 @@ LinearLayout sharedToLinearLayoutNoLeadingOffset(ArrayRef<int64_t> shape,
     int perPhase = shared.getPerPhase();
     int maxPhase = shared.getMaxPhase();
     int phase = (row / perPhase) % maxPhase;
-    // llvm::outs() << "<<< row = " << row << ", vec = " << vec << ", perPhase = " << perPhase << ", maxPhase = " << maxPhase << ", phase = " << phase << "\n";
+    llvm::outs() << "row = " << row << ", vec = " << vec << ", perPhase = " << perPhase << ", maxPhase = " << maxPhase << "\n";
+    llvm::outs() << "<<<<< phase_before = " << phase;
     // AMD special swizzling for K-major matrix. We switch up swizzling pattern
     // every perPhase*maxPhase rows to reduce write bank conflict
     if (inThreadTranspose) {
-      phase = (phase ^ row / maxPhase / perPhase) % maxPhase;
+      phase = (phase ^ (row / maxPhase / perPhase)) % maxPhase;
     }
-    // llvm::outs() << "    row = " << row << ", phase = " << phase << ", idx = " << (vec * phase) % numCols << "\n";
+    llvm::outs() << ", <<<< phase_after = " << phase << ", idx = " << (vec * phase) % numCols << "\n";
     bases2D.push_back({row, (vec * phase) % numCols});
   }
   LinearLayout ctaLayout =
       LinearLayout({{S("offset"), bases2D}}, {rowDimName, colDimName});
-  ctaLayout.printLayoutInfo("ctaLayout");
+  ctaLayout.printLayoutInfo("ctaLayout1");
 
   // test code
-  if (inThreadTranspose) {
-    llvm::outs() << "----------------Swizze_output----------\n";
-    for (int i = 0; i < 2048; ++i) {
-      SmallVector<std::pair<StringAttr, int32_t>> ins = {{S("offset"), i}};
-      auto outs = ctaLayout.apply(ins);
-      llvm::outs() << outs[0].second << "\t" << outs[1].second << "\n";
-    }
-  }
+  // if (inThreadTranspose) {
+  //   llvm::outs() << "----------------Swizze_output----------\n";
+  //   for (int i = 0; i < 2048; ++i) {
+  //     SmallVector<std::pair<StringAttr, int32_t>> ins = {{S("offset"), i}};
+  //     auto outs = ctaLayout.apply(ins);
+  //     llvm::outs() << outs[0].second << "\t" << outs[1].second << "\n";
+  //   }
+  // }
 
   // Add the remaining dimensions.
   for (int i = 2; i < rank; i++) {
@@ -441,6 +447,7 @@ LinearLayout sharedToLinearLayoutNoLeadingOffset(ArrayRef<int64_t> shape,
     ctaLayout *=
         LinearLayout::identity1D(shape[dim], S("offset"), outDimNames[dim]);
   }
+  ctaLayout.printLayoutInfo("ctaLayout2");
 
   auto tmp = combineCtaCgaWithShape(ctaLayout, shared.getCTALayout(), shape);
   llvm::outs() << "tmpLinearLayout, inThreadTranspose = " << inThreadTranspose << "\n";
@@ -637,6 +644,8 @@ std::optional<LinearLayout> blockedToLinearLayoutThreadRake(
       transposeND(S("register"), sizePerThread, order, outDimNames) *
       identityND(S("lane"), blocked.getThreadsPerWarp(), order, outDimNames) *
       identityND(S("warp"), blocked.getWarpsPerCTA(), order, outDimNames);
+
+  ctaLayout.printLayoutInfo("threadRakeCTALayout");
 
   return combineCtaCgaWithShape(ctaLayout, blocked.getCTALayout(), shape);
 }

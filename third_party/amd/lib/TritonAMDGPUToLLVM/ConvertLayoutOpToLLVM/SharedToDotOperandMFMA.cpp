@@ -77,8 +77,9 @@ llvm::SmallVector<llvm::SmallVector<Value>> computeTensorElemMappingInBlock(
   auto numM = reps[1];
   auto numK = reps[2];
   const int loadsPerThread = numOfElems / loadVecSize;
+  llvm::outs() << "numM = " << numM << ", numK = " << numK << ", loadsPerThread = " << loadsPerThread << "\n";
   llvm::SmallVector<llvm::SmallVector<Value>> mapping(numK * loadsPerThread);
-
+  llvm::outs() << "elemPerInstr = {" << elemsPerInstr[0] << ", " << elemsPerInstr[1] << "}, nonKDim = " << iNonKDim << "\n";
   Value _0 = i32_val(0);
   Value _32 = i32_val(32);
   Value nonKDim = i32_val(iNonKDim);
@@ -254,6 +255,9 @@ Value convertLayout(int opIdx, ConversionPatternRewriter &rewriter,
   Value linearWarpId = udiv(thread, warpSize);
   Value lane = urem(thread, warpSize);
 
+  auto mfmaOrder = triton::gpu::getOrder(mfmaLayout);
+  llvm::outs() << "mfmaOrder = {" << mfmaOrder[0] << ", " << mfmaOrder[1] << "}\n"; 
+
   Value spatialWarpId = AMD::getWarpIdInBlock(
       rewriter, loc, linearWarpId, warpsPerCTA, mfmaInstrNonK,
       shape[nonKDimIdx], nonKDimIdx, triton::gpu::getOrder(mfmaLayout));
@@ -279,6 +283,11 @@ Value convertLayout(int opIdx, ConversionPatternRewriter &rewriter,
   Value smemBase;
   bool isFastPath =
       !AMD::isKMinor(order, opIdx) && !hasSwizzleEnabled(sharedLayout);
+  llvm::outs() << "opIdx = " << opIdx << "\n";
+  llvm::outs() << "sharedLayout = " << sharedLayout << "\n";
+  llvm::outs() << "sharedOrder = {" << order[0] << ", " << order[1] << "}\n";
+  llvm::outs() << "isKMinor = " << AMD::isKMinor(order, opIdx) << ", hasSwizzle = " << hasSwizzleEnabled(sharedLayout) << "\n";
+  llvm::outs() << "isFastPath = " << isFastPath << "\n";
   if (isFastPath) {
     // fast path handles tensors that are not consecutive on k and have
     // swizzling disabled, in which case offsets computation can be simplified

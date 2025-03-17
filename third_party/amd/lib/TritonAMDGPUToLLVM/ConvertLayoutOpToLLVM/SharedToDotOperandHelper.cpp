@@ -208,7 +208,6 @@ llvm::SmallVector<Value> computeOffsetsBType(
   SmallVector<Value> tOffsets = transposeSpatialDims(smemObj.getOffsets());
   SmallVector<Value> tStrides = transposeSpatialDims(smemObj.getStrides());
 
-  // llvm::outs() << "bType, reps = {" << reps[0] << ", " << reps[1] << "}\n";
 
   int vectorSize = 1;
   if (srcLayout.getOrder()[0] == rank - 2) {
@@ -223,10 +222,14 @@ llvm::SmallVector<Value> computeOffsetsBType(
   const auto numBlocks = tReps[tReps.size() - 2];
   const auto blockSize = mapping.size();
   auto order = srcLayout.getOrder();
+  llvm::outs() << "B_Type, reps = {" << reps[0] << ", " << reps[1] << "}\n";
+  llvm::outs() << "B_order = {" << order[0] << ", " << order[1] << "}, blockSize = " << blockSize << "\n";
+  llvm::outs() << "sharedLayout = " << srcLayout << "\n";
   llvm::SmallVector<Value> bOffsets(blockSize * numBlocks);
 
   if (!isSwizzlePatternFitsIntoBlock(srcLayout, 0, reps, elemsPerInstr,
                                      warpsPerBlock)) {
+    llvm::outs() << "isSwizzlePatternFitsIntoBlock return false\n";
     for (int block = 0; block < numBlocks; ++block) {
       int blockNonKOffset = block * nonKDim * warpsPerBlock;
       for (int i = 0; i < mapping.size(); ++i) {
@@ -239,6 +242,7 @@ llvm::SmallVector<Value> computeOffsetsBType(
       }
     }
   } else {
+    llvm::outs() << "isSwizzlePatternFitsIntoBlock return true\n";
     // compute inblock offsets once and reuse them for all blocks
     llvm::SmallVector<Value> inblockOffset(mapping.size());
     for (int i = 0; i < mapping.size(); ++i) {
@@ -249,6 +253,7 @@ llvm::SmallVector<Value> computeOffsetsBType(
       inblockOffset[i] =
           computeOffset(rewriter, loc, row, col, smemObj, srcLayout);
     }
+    llvm::outs() << "numBlocks = " << numBlocks << ", warpsPerBlock = " << warpsPerBlock << ", nonKDim = " << nonKDim << "\n";
     for (int block = 0; block < numBlocks; ++block) {
       int blockNonKOffset = block * nonKDim * warpsPerBlock;
       Value offAdjust = mul(i32_val(blockNonKOffset), tStrides[rank - 2]);

@@ -285,8 +285,8 @@ bool emitTransferBetweenRegistersAndShared(
     regLayout =
       mlir::triton::gpu::blockedToLinearLayoutThreadRake(shape, regEncoding);
     regLayout.value().printLayoutInfo("ThreadRakeRegLayout");
-    std::optional<LinearLayout> tmpRegLayout = triton::gpu::toLinearLayout(shape, regEncoding);
-    tmpRegLayout.value().printLayoutInfo("TmpRegForThreadLayout");
+    // std::optional<LinearLayout> tmpRegLayout = triton::gpu::toLinearLayout(shape, regEncoding);
+    // tmpRegLayout.value().printLayoutInfo("TmpRegForThreadLayout");
   }
   else {
     regLayout =
@@ -320,8 +320,20 @@ bool emitTransferBetweenRegistersAndShared(
   // regToSharedLayout maps from (register, lane, warp, block) to (offsetX1,
   // ..., offsetXN, block), where the offsetX's are in minor-to-major order.
   llvm::outs() << "sharedLayout = " << *sharedLayout << "\n";
+  sharedLayout.value().printLayoutInfo("threadRakeSharedLayout");
   LinearLayout regToSharedLayout = regLayout->invertAndCompose(*sharedLayout);
   regToSharedLayout.printLayoutInfo("regToSharedLayout");
+
+  for (int ln = 0; ln < 64; ++ln) {
+    for (int reg = 0; reg < 32; ++reg) {
+        auto outs = regToSharedLayout.apply(
+        {{kRegister, reg},
+         {kLane, ln},
+         {kWarp, 0},
+         {kBlock, 0}});
+      llvm::outs() << outs[0].second << "\t" << outs[1].second << "\n";
+    }
+  }
 
   // TODO(jlebar): We don't currently support loading from shared memory in a
   // different CTA.  We'd need to emit `mapa.shared::cluster` instructions.
