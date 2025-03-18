@@ -31,7 +31,7 @@ swizzleIndexes(ConversionPatternRewriter &rewriter, Location loc, Value row,
     std::swap(row, col);
   }
 
-  llvm::outs() << "swizzleIndexes, vec = " << attr.getVec() << ", perPhase = " << attr.getPerPhase() << ", maxPhase = " << attr.getMaxPhase() << "\n";
+  llvm::outs() << "swizzleIndexes, vec = " << attr.getVec() << ", perPhase = " << attr.getPerPhase() << ", maxPhase = " << attr.getMaxPhase() << ", transposed = " << transposed << "\n";
 
   auto vec = i32_val(attr.getVec());
   auto perPhase = i32_val(attr.getPerPhase());
