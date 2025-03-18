@@ -42,8 +42,8 @@ try:
 except ModuleNotFoundError:
     HAS_APEX = False
 
-DEVICE = triton.runtime.driver.active.get_active_torch_device()
-
+# DEVICE = triton.runtime.driver.active.get_active_torch_device()
+DEVICE = 'cuda'
 
 @triton.jit
 def _layer_norm_fwd_fused(
@@ -127,6 +127,61 @@ def _layer_norm_fwd_fused(
 # In Stage 1, the rows of X that have the same color share the same buffer and thus a lock is used to ensure that only one kernel instance writes to the buffer at a time.
 # In Stage 2, the buffers are further reduced to compute the final :math:`\nabla_{w}` and :math:`\nabla_{b}`.
 # In the following implementation, Stage 1 is implemented by the function :code:`_layer_norm_bwd_dx_fused` and Stage 2 is implemented by the function :code:`_layer_norm_bwd_dwdb`.
+
+
+# @triton.jit
+# def _layer_norm_bwd_dx_fused(DX,  # pointer to the input gradient
+#                              DY,  # pointer to the output gradient
+#                              DW,  # pointer to the partial sum of weights gradient
+#                              DB,  # pointer to the partial sum of biases gradient
+#                              X,  # pointer to the input
+#                              W,  # pointer to the weights
+#                              Mean,  # pointer to the mean
+#                              Rstd,  # pointer to the 1/std
+#                              stride,  # how much to increase the pointer when moving by 1 row
+#                              N,  # number of columns in X
+#                              NUM_ROWS: tl.constexpr, BLOCK_SIZE_N: tl.constexpr):
+#     # Map the program id to the elements of X, DX, and DY it should compute.
+#     pid = tl.program_id(0)
+#     pid_n = tl.program_id(1)
+#     tile_num = tl.num_programs(0)
+#     rows_per_tile = NUM_ROWS // tile_num
+#     if pid < NUM_ROWS % tile_num:
+#         rows_per_tile += 1
+
+#     cols = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
+#     mask = cols < N
+#     row = pid
+#     for _ in range(0, rows_per_tile):
+#         x_ptrs = X + row * stride
+#         dy_ptrs = DY + row * stride
+#         dx_ptrs = DX + row * stride
+#         dw_ptrs = DW + pid * N + cols
+#         db_ptrs = DB + pid * N + cols
+#         # Load data to SRAM
+#         x = tl.load(x_ptrs + cols, mask=mask, other=0).to(tl.float32)
+#         dy = tl.load(dy_ptrs + cols, mask=mask, other=0).to(tl.float32)
+#         w = tl.load(W + cols, mask=mask).to(tl.float32)
+#         mean = tl.load(Mean + row)
+#         rstd = tl.load(Rstd + row)
+#         # Compute dx
+#         xhat = (x - mean) * rstd
+#         wdy = w * dy
+#         xhat = tl.where(mask, xhat, 0.)
+#         wdy = tl.where(mask, wdy, 0.)
+#         c1 = tl.sum(xhat * wdy, axis=0) / N
+#         c2 = tl.sum(wdy, axis=0) / N
+#         dx = (wdy - (xhat * c1 + c2)) * rstd
+#         # Write dx
+#         tl.store(dx_ptrs + cols, dx, mask=mask)
+#         # Accumulate partial sums for dw/db
+#         partial_dw = (dy * xhat).to(w.dtype)
+#         partial_db = (dy).to(w.dtype)
+#         partial_dw += tl.load(dw_ptrs, mask=mask)
+#         partial_db += tl.load(db_ptrs, mask=mask)
+#         tl.store(dw_ptrs, partial_dw, mask=mask)
+#         tl.store(db_ptrs, partial_db, mask=mask)
+#         row += tile_num
 
 
 @triton.jit
@@ -256,6 +311,29 @@ class LayerNorm(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, dy):
+        # x, w, b, m, v = ctx.saved_tensors
+        # N = w.shape[0]
+        # x_arg = x.reshape(-1, x.shape[-1])
+        # M = x_arg.shape[0]
+        # tile_num = max(min(256, M // 4), 1)
+        # # allocate output
+        # _dw = torch.zeros((tile_num, N), dtype=x.dtype, device=w.device)
+        # _db = torch.zeros((tile_num, N), dtype=x.dtype, device=w.device)
+        # dw = torch.empty((N, ), dtype=w.dtype, device=w.device)
+        # db = torch.empty((N, ), dtype=w.dtype, device=w.device)
+        # dx = torch.empty_like(dy)
+
+        # # enqueue kernel using forward pass heuristics
+        # # also compute partial sums for DW and DB
+        # M, N = x_arg.shape
+        # grid_bwd = lambda meta: (tile_num, triton.cdiv(N, meta['BLOCK_SIZE_N']))
+        # _layer_norm_bwd_dx_fused[grid_bwd](  #
+        #     dx, dy, _dw, _db, x, w, m, v,  #
+        #     x_arg.stride(0), N,  #
+        #     NUM_ROWS=M,  #
+        #     BLOCK_SIZE_N=ctx.BLOCK_SIZE,  #
+        #     num_warps=ctx.num_warps)
+
         x, w, b, m, v = ctx.saved_tensors
         # heuristics for amount of parallel reduction stream for DW/DB
         N = w.shape[0]
@@ -270,6 +348,7 @@ class LayerNorm(torch.autograd.Function):
         dw = torch.empty((N, ), dtype=w.dtype, device=w.device)
         db = torch.empty((N, ), dtype=w.dtype, device=w.device)
         dx = torch.empty_like(dy)
+
         # enqueue kernel using forward pass heuristics
         # also compute partial sums for DW and DB
         x_arg = x.reshape(-1, x.shape[-1])
@@ -280,6 +359,10 @@ class LayerNorm(torch.autograd.Function):
             BLOCK_SIZE_N=ctx.BLOCK_SIZE,  #
             GROUP_SIZE_M=GROUP_SIZE_M,  #
             num_warps=ctx.num_warps)
+        
+        print(f"_db = {_db}")
+        print(f"_dw = {_dw}")
+
         grid = lambda meta: (triton.cdiv(N, meta['BLOCK_SIZE_N']), )
         # accumulate partial sums in separate kernel
         _layer_norm_bwd_dwdb[grid](
@@ -296,10 +379,12 @@ def test_layer_norm(M, N, dtype, eps=1e-5, device=DEVICE):
     # create data
     x_shape = (M, N)
     w_shape = (x_shape[-1], )
+    torch.manual_seed(0)
     weight = torch.rand(w_shape, dtype=dtype, device=device, requires_grad=True)
     bias = torch.rand(w_shape, dtype=dtype, device=device, requires_grad=True)
     x = -2.3 + 0.5 * torch.randn(x_shape, dtype=dtype, device=device)
     dy = .1 * torch.randn_like(x)
+    print(f"dy = {dy}")
     x.requires_grad_(True)
     # forward pass
     y_tri = layer_norm(x, w_shape, weight, bias, eps)
@@ -314,8 +399,10 @@ def test_layer_norm(M, N, dtype, eps=1e-5, device=DEVICE):
     # compare
     assert torch.allclose(y_tri, y_ref, atol=1e-2, rtol=0)
     assert torch.allclose(dx_tri, dx_ref, atol=1e-2, rtol=0)
-    assert torch.allclose(db_tri, db_ref, atol=1e-2, rtol=0)
-    assert torch.allclose(dw_tri, dw_ref, atol=1e-2, rtol=0)
+    print(f"db_tri = {db_tri}")
+    print(f"db_ref = {db_ref}")
+    torch.testing.assert_close(db_tri, db_ref, atol=1e-2, rtol=0)
+    torch.testing.assert_close(dw_tri, dw_ref, atol=1e-2, rtol=0)
 
 
 @triton.testing.perf_report(
@@ -367,7 +454,7 @@ def bench_layer_norm(M, N, dtype, provider, mode='backward', eps=1e-5, device=DE
 
 
 test_layer_norm(1151, 8192, torch.float16)
-bench_layer_norm.run(save_path='.', print_data=True)
+# bench_layer_norm.run(save_path='.', print_data=True)
 
 # %%
 # References
