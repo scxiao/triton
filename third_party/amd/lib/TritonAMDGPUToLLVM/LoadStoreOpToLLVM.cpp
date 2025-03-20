@@ -1051,6 +1051,9 @@ struct AtomicCASOpConversion
     auto ptrElements = unpackLLElements(loc, llPtr, rewriter);
     auto cmpElements = unpackLLElements(loc, llCmp, rewriter);
     auto valElements = unpackLLElements(loc, llVal, rewriter);
+    llvm::outs() << "ptrSize = " << ptrElements.size() << "\n";
+    llvm::outs() << "cmpSize = " << cmpElements.size() << "\n";
+    llvm::outs() << "valSize = " << valElements.size() << "\n";
 
     auto memOrdering = op.getSem();
     auto atomicMemOrdering = getMemoryOrdering(memOrdering);
@@ -1079,17 +1082,18 @@ struct AtomicCASOpConversion
     SmallVector<Value> resultVals(elemsPerThread);
 
     // atomic ops
+    llvm::outs() << "elemsPerThread = " << elemsPerThread << "\n";
     for (size_t i = 0; i < elemsPerThread; i += vec) {
-      Value casVal = b.undef(vecTy);
-      for (int ii = 0; ii < vec; ++ii) {
-        Value iiVal = createIndexAttrConstant(
-            rewriter, loc, getTypeConverter()->getIndexType(), ii);
-        casVal = b.insert_element(vecTy, casVal, valElements[i + ii], iiVal);
-      }
+      // Value casVal = b.undef(vecTy);
+      // for (int ii = 0; ii < vec; ++ii) {
+      //   Value iiVal = createIndexAttrConstant(
+      //       rewriter, loc, getTypeConverter()->getIndexType(), ii);
+      //   casVal = b.insert_element(vecTy, casVal, valElements[i + ii], iiVal);
+      // }
 
       Value casPtr = ptrElements[i];
       Value casCmp = cmpElements[i];
-      casVal = valElements[i];
+      Value casVal = valElements[i];
 
       // use op
       if (TensorTy) { // for tensor
@@ -1125,11 +1129,12 @@ struct AtomicCASOpConversion
         // Build main block with atomic_cmpxchg.
         rewriter.setInsertionPointToEnd(atomicBlock);
 
-        auto successOrdering = LLVM::AtomicOrdering::acq_rel;
+        auto successOrdering = atomicMemOrdering;
         auto failureOrdering = LLVM::AtomicOrdering::monotonic;
         auto cmpxchg = rewriter.create<LLVM::AtomicCmpXchgOp>(
             loc, casPtr, casCmp, casVal, successOrdering, failureOrdering,
             StringRef("agent"));
+        StringAttr scope = mlir::StringAttr::get(loc.getContext(), StringRef("agent"));
 
         if (atomicNeedsSharedMemory(op.getResult())) {
           // Extract the new_loaded value from the pair.
@@ -1148,7 +1153,7 @@ struct AtomicCASOpConversion
           rewriter.eraseOp(op);
           return success();
         }
-
+        llvm::outs() << "Need to read from shared memory\n";
         GCNBuilder BuilderMemfenceLDS;
         BuilderMemfenceLDS.create<>("s_waitcnt lgkmcnt(0)")->operator()();
         BuilderMemfenceLDS.launch(rewriter, loc, void_ty(ctx));
@@ -1156,6 +1161,10 @@ struct AtomicCASOpConversion
         Value atomPtr =
             getSharedMemoryBase(loc, rewriter, targetInfo, op.getOperation());
         Value ret = b.load(valueElemTy, atomPtr);
+
+        rewriter.create<LLVM::FenceOp>(loc, TypeRange{}, LLVM::AtomicOrdering::release, scope);
+        rewriter.create<LLVM::FenceOp>(loc, TypeRange{}, LLVM::AtomicOrdering::acquire, scope);
+
         rewriter.replaceOp(op, {ret});
       }
     }
@@ -1428,6 +1437,8 @@ struct AtomicRMWOpConversion
       // mask
       numElems = tensorTy.getNumElements();
     }
+
+    llvm::outs() << "UseDPPForPackeF16 = " << useDppForPackedF16 << "\n";
     Value mask = b.true_val();
     auto tid = getThreadId(rewriter, loc);
     mask = b.and_(mask, b.icmp_slt(b.mul(tid, b.i32_val(elemsPerThread)),
@@ -1644,6 +1655,11 @@ struct AtomicRMWOpConversion
             getSharedMemoryBase(loc, rewriter, targetInfo, op.getOperation());
         b.barrier();
         Value ret = b.load(valueElemTy, atomPtr);
+
+        StringAttr scope = mlir::StringAttr::get(loc.getContext(), StringRef("agent"));
+        rewriter.create<LLVM::FenceOp>(loc, TypeRange{}, LLVM::AtomicOrdering::release, scope);
+        rewriter.create<LLVM::FenceOp>(loc, TypeRange{}, LLVM::AtomicOrdering::acquire, scope);
+
         rewriter.replaceOp(op, {ret});
       }
     }
