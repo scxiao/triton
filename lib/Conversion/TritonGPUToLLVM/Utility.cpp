@@ -283,10 +283,9 @@ bool emitTransferBetweenRegistersAndShared(
   auto regEncoding = registerTy.getEncoding();
   if (crossGrain)
     regLayout =
-      mlir::triton::gpu::blockedToLinearLayoutThreadRake(shape, regEncoding);
+        mlir::triton::gpu::blockedToLinearLayoutThreadRake(shape, regEncoding);
   else
-    regLayout =
-      triton::gpu::toLinearLayout(shape, regEncoding);
+    regLayout = triton::gpu::toLinearLayout(shape, regEncoding);
   std::optional<LinearLayout> sharedLayout = triton::gpu::toLinearLayout(
       shape, sharedTy.getEncoding(), elemLlvmTy.getIntOrFloatBitWidth());
   if (!regLayout.has_value() || !sharedLayout.has_value()) {
@@ -418,44 +417,54 @@ void storeDistributedToShared(MemDescType dstTy, RankedTensorType srcTy,
   // TODO: Enforce that crossGrain=True is only for AMD
   unsigned int numElementsPerIter = 1;
   unsigned int innerVectorization = 1;
-  unsigned int val_counter = 0;
+  unsigned int val_inner_counter = 0;
+  unsigned int val_outer_counter = 0;
+  unsigned int outer_dim = 1;
   if (!crossGrain) {
-    perVectorCallback = [&srcVals, &elemLlvmTy, &loc, &rewriter](VectorType vecTy, Value vecAddr) {
-          ArrayRef<Value> vals = srcVals.take_front(vecTy.getNumElements());
-          srcVals = srcVals.drop_front(vecTy.getNumElements());
+    perVectorCallback = [&srcVals, &elemLlvmTy, &loc,
+                         &rewriter](VectorType vecTy, Value vecAddr) {
+      ArrayRef<Value> vals = srcVals.take_front(vecTy.getNumElements());
+      srcVals = srcVals.drop_front(vecTy.getNumElements());
 
-          Value vec = undef(vecTy);
-          for (int i = 0; i < vals.size(); i++) {
-            vec = insert_element(vec, vals[i], i32_val(i));
-          }
-          store(vec, vecAddr)
-              .setAlignment(vecTy.getNumElements() *
-                            elemLlvmTy.getIntOrFloatBitWidth() / 8);
-        };
-  } else if (auto blockedEncoding = dyn_cast<BlockedEncodingAttr>(srcTy.getEncoding())) {
+      Value vec = undef(vecTy);
+      for (int i = 0; i < vals.size(); i++) {
+        vec = insert_element(vec, vals[i], i32_val(i));
+      }
+      store(vec, vecAddr)
+          .setAlignment(vecTy.getNumElements() *
+                        elemLlvmTy.getIntOrFloatBitWidth() / 8);
+    };
+  } else if (auto blockedEncoding =
+                 dyn_cast<BlockedEncodingAttr>(srcTy.getEncoding())) {
     auto sizePerThread = blockedEncoding.getSizePerThread();
     auto order = blockedEncoding.getOrder();
     numElementsPerIter = product<unsigned>(sizePerThread);
     innerVectorization = sizePerThread[order[0]];
-    perVectorCallback = [&srcVals, &elemLlvmTy, &loc, &rewriter, &val_counter, &innerVectorization, &numElementsPerIter](VectorType vecTy, Value vecAddr) {
-          Value vec = undef(vecTy);
-          for (int i = 0; i < vecTy.getNumElements(); i++) {
-              auto idx = val_counter % innerVectorization +
-                  val_counter / innerVectorization * numElementsPerIter +
-                  i*innerVectorization;
-              vec = insert_element(vec, srcVals[idx], i32_val(i));
-          }
-          val_counter++;
-          store(vec, vecAddr)
-              .setAlignment(vecTy.getNumElements() *
-                            elemLlvmTy.getIntOrFloatBitWidth() / 8);
-        };
+    outer_dim = sizePerThread[order[1]];
+    perVectorCallback = [&srcVals, &elemLlvmTy, &loc, &rewriter,
+                         &val_inner_counter, &val_outer_counter,
+                         &innerVectorization, &outer_dim,
+                         &numElementsPerIter](VectorType vecTy, Value vecAddr) {
+      Value vec = undef(vecTy);
+      for (int i = 0; i < vecTy.getNumElements(); i++) {
+        auto column_offset = val_outer_counter % innerVectorization;
+        auto row_offset = val_inner_counter * innerVectorization;
+        auto idx = row_offset + column_offset;
+        val_inner_counter = (val_inner_counter + 1) % outer_dim;
+        if (val_inner_counter == 0)
+          val_outer_counter++;
+        vec = insert_element(vec, srcVals[idx], i32_val(i));
+      }
+      store(vec, vecAddr)
+          .setAlignment(vecTy.getNumElements() *
+                        elemLlvmTy.getIntOrFloatBitWidth() / 8);
+    };
   } else {
     llvm::report_fatal_error("Failed to detect block encoding");
   }
   success = emitTransferBetweenRegistersAndShared(
-        srcTy, dstTy, elemLlvmTy, /*maxVecElems=*/std::nullopt, smemBase,
-        dstStrides, loc, rewriter, target, crossGrain, perVectorCallback);
+      srcTy, dstTy, elemLlvmTy, /*maxVecElems=*/std::nullopt, smemBase,
+      dstStrides, loc, rewriter, target, crossGrain, perVectorCallback);
   if (!success)
     llvm::report_fatal_error("Failed to emit transfer from register to shared");
 }
