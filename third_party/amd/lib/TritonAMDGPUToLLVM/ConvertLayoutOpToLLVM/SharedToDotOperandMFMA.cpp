@@ -78,6 +78,7 @@ llvm::SmallVector<llvm::SmallVector<Value>> computeTensorElemMappingInBlock(
   auto numK = reps[2];
   const int loadsPerThread = numOfElems / loadVecSize;
   llvm::SmallVector<llvm::SmallVector<Value>> mapping(numK * loadsPerThread);
+
   Value _0 = i32_val(0);
   Value _32 = i32_val(32);
   Value nonKDim = i32_val(iNonKDim);
@@ -229,6 +230,7 @@ Value convertLayout(int opIdx, ConversionPatternRewriter &rewriter,
     mfmaInstrNonK = elemsPerInstr[nonKDimIdx];
     mfmaInstrK = elemsPerInstr[kDimIdx];
   }
+
   if (mfmaInstrNonK > shape[nonKDimIdx] || mfmaInstrK > shape[kDimIdx]) {
     // This pattern does not support cases tensor shape is smaller than
     // one instruction size, it will be processed by LinearLayout converter
@@ -252,7 +254,6 @@ Value convertLayout(int opIdx, ConversionPatternRewriter &rewriter,
   Value linearWarpId = udiv(thread, warpSize);
   Value lane = urem(thread, warpSize);
 
-  auto mfmaOrder = triton::gpu::getOrder(mfmaLayout);
   Value spatialWarpId = AMD::getWarpIdInBlock(
       rewriter, loc, linearWarpId, warpsPerCTA, mfmaInstrNonK,
       shape[nonKDimIdx], nonKDimIdx, triton::gpu::getOrder(mfmaLayout));
