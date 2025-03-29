@@ -282,7 +282,6 @@ LinearLayout combineCtaCgaWithShape(LinearLayout ctaLayout,
   llvm::SmallDenseMap<StringAttr, int64_t> labeledShape;
   for (auto [dim, size] : llvm::zip(outDimNames, shape)) {
     labeledShape[dim] = size;
-    // llvm::outs() << "labeledShape[" << dim << "] = " << labeledShape[dim] << "\n";
   }
 
   LinearLayout cgaLayout =
@@ -297,13 +296,10 @@ LinearLayout combineCtaCgaWithShape(LinearLayout ctaLayout,
   for (auto dim : ctaLayout.getOutDimNames()) {
     ctaShape[dim] =
         std::max(int64_t{1}, labeledShape[dim] / cgaLayout.getOutDimSize(dim));
-    // llvm::outs() << "ctaShape[" << dim << "] = " << ctaShape[dim] << "\n";
   }
 
   ctaLayout = ensureLayoutNotSmallerThan(ctaLayout, ctaShape);
-  // llvm::outs() << "after ensureLayoutNotSmallerThan" << ctaLayout << "\n";
   ctaLayout = ensureLayoutNotLargerThan(ctaLayout, ctaShape);
-  // llvm::outs() << "after ensureLayoutNotLargerThan" << ctaLayout << "\n";
 
   LinearLayout ret = (ctaLayout * cgaLayout).transposeOuts(outDimNames);
   for (auto dim : ret.getOutDimNames()) {
