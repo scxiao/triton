@@ -67,7 +67,6 @@ Value computeOffset(ConversionPatternRewriter &rewriter, Location loc,
   const auto &strides = smemObj.getStrides();
   auto rank = strides.size();
   assert(rank == 2 || rank == 3);
-  auto inThreadTranspose = srcLayout.getInThreadTranspose();
   Value rowOffset, colOffset;
   rowOffset = mul(swizzledRow, strides[rank - 2]);
   colOffset = mul(swizzledCol, strides[rank - 1]);
