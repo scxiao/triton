@@ -284,14 +284,10 @@ bool emitTransferBetweenRegistersAndShared(
   if (crossGrain) {
     regLayout =
       mlir::triton::gpu::blockedToLinearLayoutThreadRake(shape, regEncoding);
-    regLayout.value().printLayoutInfo("ThreadRakeRegLayout");
-    // std::optional<LinearLayout> tmpRegLayout = triton::gpu::toLinearLayout(shape, regEncoding);
-    // tmpRegLayout.value().printLayoutInfo("TmpRegForThreadLayout");
   }
   else {
     regLayout =
       triton::gpu::toLinearLayout(shape, regEncoding);
-    regLayout.value().printLayoutInfo("regularRegLayout");
   }
   std::optional<LinearLayout> sharedLayout = triton::gpu::toLinearLayout(
       shape, sharedTy.getEncoding(), elemLlvmTy.getIntOrFloatBitWidth());
@@ -319,32 +315,7 @@ bool emitTransferBetweenRegistersAndShared(
 
   // regToSharedLayout maps from (register, lane, warp, block) to (offsetX1,
   // ..., offsetXN, block), where the offsetX's are in minor-to-major order.
-  llvm::outs() << "sharedLayout = " << *sharedLayout << "\n";
-  sharedLayout.value().printLayoutInfo("threadRakeSharedLayout");
   LinearLayout regToSharedLayout = regLayout->invertAndCompose(*sharedLayout);
-  regToSharedLayout.printLayoutInfo("regToSharedLayout");
-
-  if (crossGrain) {
-    for (int col = 0; col < 128; ++col) {
-      for (int row = 0; row < 16; ++row) {
-        int lnCol = col / 8;
-        int lnRow = row / 4;
-        int rgRow = row % 4;
-        int rgCol = col % 8;
-        int reg = rgRow + rgCol * 4;
-        int ln = lnRow * 16 + lnCol;
-        auto outs = regToSharedLayout.apply(
-          {{kRegister, reg},
-          {kLane, ln},
-          {kWarp, 0},
-          {kBlock, 0}});
-        llvm::outs() << "{row, col} = " << "{" << row << ", " << col << "}";
-        llvm::outs() << ", {reg, ln} = " << "{" << reg << ", " << ln << "}";
-        llvm::outs() << ", out{row, col} = " << "{" << outs[0].second << ", " << outs[1].second << "}\n";
-      }
-      llvm::outs() << "\n";
-    }
-  }
 
   // TODO(jlebar): We don't currently support loading from shared memory in a
   // different CTA.  We'd need to emit `mapa.shared::cluster` instructions.
@@ -385,8 +356,6 @@ bool emitTransferBetweenRegistersAndShared(
   Value warpId = udiv(threadId, threadsPerWarp);
 
   int numElems = regToSharedLayout.getInDimSize(kRegister);
-  llvm::outs() << "numElems = " << numElems << ", vecElems = " << vecElems << "\n";
-  llvm::outs() << "sharedOrder = {" << sharedOrder[0] << ", " << sharedOrder[1] << "}\n";
   auto vecTy = vec_ty(elemLlvmTy, vecElems);
   auto ptrTy = shmemBase.getType();
   Value zero = i32_val(0);
@@ -446,8 +415,6 @@ void storeDistributedToShared(MemDescType dstTy, RankedTensorType srcTy,
                               const TargetInfoBase &target, bool crossGrain) {
   bool success;
   std::function<void(VectorType, Value /*shmemAddr*/)> perVectorCallback;
-  llvm::outs() << "crossGrain = " << crossGrain;
-  llvm::outs() << ", srcEncoding = " << srcTy.getEncoding() << "\n";
   if (!crossGrain) {
     perVectorCallback = [&](VectorType vecTy, Value vecAddr) {
           ArrayRef<Value> vals = srcVals.take_front(vecTy.getNumElements());
@@ -467,22 +434,16 @@ void storeDistributedToShared(MemDescType dstTy, RankedTensorType srcTy,
   } else {
     auto blockedEncoding = dyn_cast<BlockedEncodingAttr>(srcTy.getEncoding());
     auto sizePerThread = blockedEncoding.getSizePerThread();
-    llvm::outs() << "sizePerThread = {" << sizePerThread[0] << ", " << sizePerThread[1] << "}, ";
     auto order = blockedEncoding.getOrder();
-    llvm::outs() << "order = {" << order[0] << ", " << order[1] << "}\n";
     unsigned int numElementsPerIter = product<unsigned>(sizePerThread);
-    llvm::outs() << "numElementsPerIter = " << numElementsPerIter << "\n";
     unsigned int val_counter = 0;
     unsigned int innerVectorization = sizePerThread[order[0]];
-    llvm::outs() << "innerVectorization = " << innerVectorization << "\n";
     perVectorCallback = [&](VectorType vecTy, Value vecAddr) {
           Value vec = undef(vecTy);
-          llvm::outs() << "---lambda, numElem = " << vecTy.getNumElements() << "\n";
           for (int i = 0; i < vecTy.getNumElements(); i++) {
               auto idx = val_counter % innerVectorization +
                   val_counter / innerVectorization * numElementsPerIter +
                   i*innerVectorization;
-              llvm::outs() << "---lambda, idx = " << idx << ", val_counter = " << val_counter << "\n";
               vec = insert_element(vec, srcVals[idx], i32_val(i));
           }
           val_counter++;
@@ -494,7 +455,6 @@ void storeDistributedToShared(MemDescType dstTy, RankedTensorType srcTy,
     success = emitTransferBetweenRegistersAndShared(
           srcTy, dstTy, elemLlvmTy, /*maxVecElems=*/std::nullopt, smemBase,
           dstStrides, loc, rewriter, target, crossGrain, perVectorCallback);
-    llvm::outs() << "val_counter = " << val_counter << "\n";
   }
   if (!success)
     llvm::report_fatal_error("Failed to emit transfer from register to shared");

@@ -31,8 +31,6 @@ swizzleIndexes(ConversionPatternRewriter &rewriter, Location loc, Value row,
     std::swap(row, col);
   }
 
-  llvm::outs() << "swizzleIndexes, vec = " << attr.getVec() << ", perPhase = " << attr.getPerPhase() << ", maxPhase = " << attr.getMaxPhase() << ", transposed = " << transposed << "\n";
-
   auto vec = i32_val(attr.getVec());
   auto perPhase = i32_val(attr.getPerPhase());
   auto maxPhase = i32_val(attr.getMaxPhase());
@@ -46,7 +44,6 @@ swizzleIndexes(ConversionPatternRewriter &rewriter, Location loc, Value row,
   // colOff = colOffSwizzled + colOffOrdered
   auto phase = urem(udiv(row, perPhase), maxPhase);
   Value colOffSwizzled;
-  llvm::outs() << "swizzleIndexes, inThreadTranspose = " << inThreadTranspose << "\n";
   if (inThreadTranspose) {
     // phase = (phase ^ row / maxPhase / perPhase) % maxPhase;
     auto rotation = udiv(udiv(row, maxPhase), perPhase);
@@ -225,16 +222,10 @@ llvm::SmallVector<Value> computeOffsetsBType(
   const auto numBlocks = tReps[tReps.size() - 2];
   const auto blockSize = mapping.size();
   auto order = srcLayout.getOrder();
-  llvm::outs() << "B_Type, reps = {" << reps[0] << ", " << reps[1] << "}\n";
-  llvm::outs() << "B_order = {" << order[0] << ", " << order[1] << "}\n";
-  llvm::outs() << "rank = " << rank << ", blockSize = " << blockSize << "\n";
-  llvm::outs() << "sharedLayout = " << srcLayout << "\n";
-  llvm::outs() << "numBlocks = " << numBlocks << ", warpsPerBlock = " << warpsPerBlock << ", nonKDim = " << nonKDim << "\n";
   llvm::SmallVector<Value> bOffsets(blockSize * numBlocks);
 
   if (!isSwizzlePatternFitsIntoBlock(srcLayout, 0, reps, elemsPerInstr,
                                      warpsPerBlock)) {
-    llvm::outs() << "isSwizzlePatternFitsIntoBlock return false\n";
     for (int block = 0; block < numBlocks; ++block) {
       int blockNonKOffset = block * nonKDim * warpsPerBlock;
       for (int i = 0; i < mapping.size(); ++i) {
@@ -247,7 +238,6 @@ llvm::SmallVector<Value> computeOffsetsBType(
       }
     }
   } else {
-    llvm::outs() << "isSwizzlePatternFitsIntoBlock return true\n";
     // compute inblock offsets once and reuse them for all blocks
     // llvm::SmallVector<Value> inblockOffset(mapping.size());
     // for (int i = 0; i < mapping.size(); ++i) {

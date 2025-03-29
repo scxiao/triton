@@ -77,9 +77,7 @@ llvm::SmallVector<llvm::SmallVector<Value>> computeTensorElemMappingInBlock(
   auto numM = reps[1];
   auto numK = reps[2];
   const int loadsPerThread = numOfElems / loadVecSize;
-  llvm::outs() << "numM = " << numM << ", numK = " << numK << ", loadsPerThread = " << loadsPerThread << "\n";
   llvm::SmallVector<llvm::SmallVector<Value>> mapping(numK * loadsPerThread);
-  llvm::outs() << "elemPerInstr = {" << elemsPerInstr[0] << ", " << elemsPerInstr[1] << "}, nonKDim = " << iNonKDim << "\n";
   Value _0 = i32_val(0);
   Value _32 = i32_val(32);
   Value nonKDim = i32_val(iNonKDim);
@@ -197,7 +195,6 @@ Value convertLayout(int opIdx, ConversionPatternRewriter &rewriter,
                     Location loc, Value tensor, DotOperandEncodingAttr encoding,
                     const SharedMemoryObject &smemObj,
                     const LLVMTypeConverter *typeConverter, Value thread) {
-  llvm::outs() << "convertLDSToDotOperand--------------------------loc1, opIdx = " << opIdx << "\n";
   assert((opIdx == 0 || opIdx == 1) && "unexpected operand idx");
   auto aTensorTy = cast<MemDescType>(tensor.getType());
   ArrayRef<int64_t> shape = aTensorTy.getShape();
@@ -220,7 +217,6 @@ Value convertLayout(int opIdx, ConversionPatternRewriter &rewriter,
   auto elemTy = aTensorTy.getElementType();
   auto kWidth = encoding.getKWidth();
   auto elemsPerInstr = mfmaLayout.getInstrShapeForOperand(kWidth, opIdx);
-  llvm::outs() << "convertLDSToDotOperand--------------------------loc2, kWidth = " << kWidth << "\n";
 
   int64_t mfmaInstrNonK;
   int64_t mfmaInstrK;
@@ -233,16 +229,12 @@ Value convertLayout(int opIdx, ConversionPatternRewriter &rewriter,
     mfmaInstrNonK = elemsPerInstr[nonKDimIdx];
     mfmaInstrK = elemsPerInstr[kDimIdx];
   }
-  llvm::outs() << "convertLDSToDotOperand--------------------------loc3\n";
-  llvm::outs() << "mfmaNonK = " << mfmaInstrNonK << ", mfmaInstrK = " << mfmaInstrK << "\n";
-  llvm::outs() << "shape = {" << shape[nonKDimIdx] << ", " << shape[kDimIdx] << "}\n";
   if (mfmaInstrNonK > shape[nonKDimIdx] || mfmaInstrK > shape[kDimIdx]) {
     // This pattern does not support cases tensor shape is smaller than
     // one instruction size, it will be processed by LinearLayout converter
     return Value();
   }
 
-  llvm::outs() << "convertLDSToDotOperand--------------------------loc4\n";
   auto numReps = mfmaLayout.getRepForOperand(shape, kWidth, opIdx);
   auto numRepNonK = numReps[nonKDimIdx];
   auto numRepK = numReps[kDimIdx];
@@ -261,13 +253,9 @@ Value convertLayout(int opIdx, ConversionPatternRewriter &rewriter,
   Value lane = urem(thread, warpSize);
 
   auto mfmaOrder = triton::gpu::getOrder(mfmaLayout);
-  llvm::outs() << "mfmaOrder = {" << mfmaOrder[0] << ", " << mfmaOrder[1] << "}\n"; 
-  llvm::outs() << "convertLDSToDotOperand--------------------------loc5\n";
-
   Value spatialWarpId = AMD::getWarpIdInBlock(
       rewriter, loc, linearWarpId, warpsPerCTA, mfmaInstrNonK,
       shape[nonKDimIdx], nonKDimIdx, triton::gpu::getOrder(mfmaLayout));
-  llvm::outs() << "convertLDSToDotOperand--------------------------loc6\n";
 
   // number of duplicates of elements in warp
   // In case of 64x4 x 4x4 multiplication, 4x4 B operand is duplicated 16 times
@@ -284,18 +272,12 @@ Value convertLayout(int opIdx, ConversionPatternRewriter &rewriter,
       rank == 3 ? std::min<unsigned>(shape[0], warpsPerCTA[0]) : 1;
   Value warpIdInBatch = urem(linearWarpId, i32_val(warpsPerBatch));
   elemTy = typeConverter->convertType(elemTy);
-  llvm::outs() << "convertLDSToDotOperand--------------------------loc7\n";
 
   SmallVector<Value> loadedValues;
   SmallVector<Value> offsets;
   Value smemBase;
   bool isFastPath =
       !AMD::isKMinor(order, opIdx) && !hasSwizzleEnabled(sharedLayout);
-  llvm::outs() << "opIdx = " << opIdx << "\n";
-  llvm::outs() << "sharedLayout = " << sharedLayout << "\n";
-  llvm::outs() << "sharedOrder = {" << order[0] << ", " << order[1] << "}\n";
-  llvm::outs() << "isKMinor = " << AMD::isKMinor(order, opIdx) << ", hasSwizzle = " << hasSwizzleEnabled(sharedLayout) << "\n";
-  llvm::outs() << "isFastPath = " << isFastPath << "\n";
   if (isFastPath) {
     // fast path handles tensors that are not consecutive on k and have
     // swizzling disabled, in which case offsets computation can be simplified
