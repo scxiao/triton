@@ -70,8 +70,11 @@ Value computeOffset(ConversionPatternRewriter &rewriter, Location loc,
   const auto &strides = smemObj.getStrides();
   auto rank = strides.size();
   assert(rank == 2 || rank == 3);
-  Value rowOffset = mul(swizzledRow, strides[rank - 2]);
-  Value colOffset = mul(swizzledCol, strides[rank - 1]);
+  auto inThreadTranspose = srcLayout.getInThreadTranspose();
+  Value rowOffset, colOffset;
+  rowOffset = mul(swizzledRow, strides[rank - 2]);
+  colOffset = mul(swizzledCol, strides[rank - 1]);
+
   return add(rowOffset, colOffset);
 }
 
@@ -223,8 +226,10 @@ llvm::SmallVector<Value> computeOffsetsBType(
   const auto blockSize = mapping.size();
   auto order = srcLayout.getOrder();
   llvm::outs() << "B_Type, reps = {" << reps[0] << ", " << reps[1] << "}\n";
-  llvm::outs() << "B_order = {" << order[0] << ", " << order[1] << "}, blockSize = " << blockSize << "\n";
+  llvm::outs() << "B_order = {" << order[0] << ", " << order[1] << "}\n";
+  llvm::outs() << "rank = " << rank << ", blockSize = " << blockSize << "\n";
   llvm::outs() << "sharedLayout = " << srcLayout << "\n";
+  llvm::outs() << "numBlocks = " << numBlocks << ", warpsPerBlock = " << warpsPerBlock << ", nonKDim = " << nonKDim << "\n";
   llvm::SmallVector<Value> bOffsets(blockSize * numBlocks);
 
   if (!isSwizzlePatternFitsIntoBlock(srcLayout, 0, reps, elemsPerInstr,
@@ -244,21 +249,33 @@ llvm::SmallVector<Value> computeOffsetsBType(
   } else {
     llvm::outs() << "isSwizzlePatternFitsIntoBlock return true\n";
     // compute inblock offsets once and reuse them for all blocks
-    llvm::SmallVector<Value> inblockOffset(mapping.size());
-    for (int i = 0; i < mapping.size(); ++i) {
-      // swap row and col, because operand B layout is a transposed operand A
-      // layout
-      Value row = mapping[i][1];
-      Value col = mapping[i][0];
-      inblockOffset[i] =
-          computeOffset(rewriter, loc, row, col, smemObj, srcLayout);
-    }
-    llvm::outs() << "numBlocks = " << numBlocks << ", warpsPerBlock = " << warpsPerBlock << ", nonKDim = " << nonKDim << "\n";
+    // llvm::SmallVector<Value> inblockOffset(mapping.size());
+    // for (int i = 0; i < mapping.size(); ++i) {
+    //   // swap row and col, because operand B layout is a transposed operand A
+    //   // layout
+    //   Value row = mapping[i][1];
+    //   Value col = mapping[i][0];
+    //   inblockOffset[i] =
+    //       computeOffset(rewriter, loc, row, col, smemObj, srcLayout);
+    // }
+    // for (int block = 0; block < numBlocks; ++block) {
+    //   int blockNonKOffset = block * nonKDim * warpsPerBlock;
+    //   Value offAdjust = mul(i32_val(blockNonKOffset), tStrides[rank - 2]);
+    //   for (int i = 0; i < mapping.size(); ++i)
+    //     bOffsets[block * blockSize + i] = add(offAdjust, inblockOffset[i]);
+    // }
+
+    // ==================
     for (int block = 0; block < numBlocks; ++block) {
       int blockNonKOffset = block * nonKDim * warpsPerBlock;
-      Value offAdjust = mul(i32_val(blockNonKOffset), tStrides[rank - 2]);
-      for (int i = 0; i < mapping.size(); ++i)
-        bOffsets[block * blockSize + i] = add(offAdjust, inblockOffset[i]);
+      // Value offAdjust = mul(i32_val(blockNonKOffset), tStrides[rank - 2]);
+      for (int i = 0; i < mapping.size(); ++i) {
+        Value row = mapping[i][1];
+        Value col = mapping[i][0];
+        col = add(col, i32_val(blockNonKOffset));
+        Value offset = computeOffset(rewriter, loc, row, col, smemObj, srcLayout);
+        bOffsets[block * blockSize + i] = offset;
+      }
     }
   }
   return bOffsets;

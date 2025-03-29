@@ -324,24 +324,26 @@ bool emitTransferBetweenRegistersAndShared(
   LinearLayout regToSharedLayout = regLayout->invertAndCompose(*sharedLayout);
   regToSharedLayout.printLayoutInfo("regToSharedLayout");
 
-  for (int col = 0; col < 128; ++col) {
-    for (int row = 0; row < 16; ++row) {
-      int lnCol = col / 8;
-      int lnRow = row / 4;
-      int rgRow = row % 4;
-      int rgCol = col % 8;
-      int reg = rgRow + rgCol * 4;
-      int ln = lnRow * 16 + lnCol;
-      auto outs = regToSharedLayout.apply(
-        {{kRegister, reg},
-         {kLane, ln},
-         {kWarp, 0},
-         {kBlock, 0}});
-      llvm::outs() << "{row, col} = " << "{" << row << ", " << col << "}";
-      llvm::outs() << ", {reg, ln} = " << "{" << reg << ", " << ln << "}";
-      llvm::outs() << ", out{row, col} = " << "{" << outs[0].second << ", " << outs[1].second << "}\n";
+  if (crossGrain) {
+    for (int col = 0; col < 128; ++col) {
+      for (int row = 0; row < 16; ++row) {
+        int lnCol = col / 8;
+        int lnRow = row / 4;
+        int rgRow = row % 4;
+        int rgCol = col % 8;
+        int reg = rgRow + rgCol * 4;
+        int ln = lnRow * 16 + lnCol;
+        auto outs = regToSharedLayout.apply(
+          {{kRegister, reg},
+          {kLane, ln},
+          {kWarp, 0},
+          {kBlock, 0}});
+        llvm::outs() << "{row, col} = " << "{" << row << ", " << col << "}";
+        llvm::outs() << ", {reg, ln} = " << "{" << reg << ", " << ln << "}";
+        llvm::outs() << ", out{row, col} = " << "{" << outs[0].second << ", " << outs[1].second << "}\n";
+      }
+      llvm::outs() << "\n";
     }
-    llvm::outs() << "\n";
   }
 
   // TODO(jlebar): We don't currently support loading from shared memory in a
