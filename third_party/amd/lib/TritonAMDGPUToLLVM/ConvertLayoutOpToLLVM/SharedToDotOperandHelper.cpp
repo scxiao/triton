@@ -160,19 +160,17 @@ llvm::SmallVector<Value> computeOffsetsAType(
       }
     }
   } else {
-    // compute inblock offsets once and reuse them for all blocks
-    llvm::SmallVector<Value> inblockOffset(mapping.size());
-    for (int i = 0; i < mapping.size(); ++i) {
-      Value row = mapping[i][0];
-      Value col = mapping[i][1];
-      inblockOffset[i] =
-          computeOffset(rewriter, loc, row, col, smemObj, srcLayout);
-    }
+    // swizzling in inThreadTranspose is alos related to blockOffset,
+    // so change to compute the offset for each different block
     for (int block = 0; block < numBlocks; ++block) {
       int blockNonKOffset = block * nonKDim * warpsPerBlock;
-      Value offAdjust = mul(i32_val(blockNonKOffset), strides[rank - 2]);
-      for (int i = 0; i < blockSize; ++i)
-        aOffsets[block * blockSize + i] = add(offAdjust, inblockOffset[i]);
+      for (int i = 0; i < mapping.size(); ++i) {
+        Value row = mapping[i][0];
+        Value col = mapping[i][1];
+        row = add(row, i32_val(blockNonKOffset));
+        Value offset = computeOffset(rewriter, loc, row, col, smemObj, srcLayout);
+        aOffsets[block * blockSize + i] = offset;
+      }
     }
   }
   return aOffsets;
