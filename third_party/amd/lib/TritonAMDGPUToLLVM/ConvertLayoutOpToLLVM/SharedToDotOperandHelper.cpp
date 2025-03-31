@@ -41,17 +41,16 @@ swizzleIndexes(ConversionPatternRewriter &rewriter, Location loc, Value row,
   // colOffSwizzled = ((col // vec) ^ phase) * vec
   // colOffOrdered = col % vec
   // colOff = colOffSwizzled + colOffOrdered
-  auto phase = urem(udiv(row, perPhase), maxPhase);
-  mlir::LLVM::MulOp colOffSwizzled;
+  Value phase = urem(udiv(row, perPhase), maxPhase);
+  Value colOffSwizzled;
   if (inThreadTranspose) {
-    // phase = (phase + row / maxPhase / perPhase) % maxPhase;
-    auto rotation = udiv(row, mul(perPhase, maxPhase));
-    colOffSwizzled = mul(xor_(udiv(col, vec), xor_(phase, rotation)), vec);
-  } else {
-    colOffSwizzled = mul(xor_(udiv(col, vec), phase), vec);
+    // phase = (phase ^ row / maxPhase / perPhase) % maxPhase;
+    auto rotation = udiv(udiv(row, maxPhase), perPhase);
+    phase = urem(xor_(phase, rotation), maxPhase);
   }
-  auto colOffOrdered = urem(col, vec);
-  auto colOff = add(colOffSwizzled, colOffOrdered);
+  colOffSwizzled = mul(xor_(udiv(col, vec), phase), vec);
+  Value colOffOrdered = urem(col, vec);
+  Value colOff = add(colOffSwizzled, colOffOrdered);
 
   if (transposed)
     return {colOff, row};
@@ -234,38 +233,17 @@ llvm::SmallVector<Value> computeOffsetsBType(
       }
     }
   } else {
-    auto inThreadTranspose = srcLayout.getInThreadTranspose();
-    if (inThreadTranspose) {
-      // swizzling in inThreadTranspose is alos related to blockOffset,
-      // so change to compute the offset for each different block
-      for (int block = 0; block < numBlocks; ++block) {
-        int blockNonKOffset = block * nonKDim * warpsPerBlock;
-        // Value offAdjust = mul(i32_val(blockNonKOffset), tStrides[rank - 2]);
-        for (int i = 0; i < mapping.size(); ++i) {
-          Value row = mapping[i][1];
-          Value col = mapping[i][0];
-          col = add(col, i32_val(blockNonKOffset));
-          Value offset = computeOffset(rewriter, loc, row, col, smemObj, srcLayout);
-          bOffsets[block * blockSize + i] = offset;
-        }
-      }
-    }
-    else {
-      // compute inblock offsets once and reuse them for all blocks
-      llvm::SmallVector<Value> inblockOffset(mapping.size());
+    // swizzling in inThreadTranspose is alos related to blockOffset,
+    // so change to compute the offset for each different block
+    for (int block = 0; block < numBlocks; ++block) {
+      int blockNonKOffset = block * nonKDim * warpsPerBlock;
+      // Value offAdjust = mul(i32_val(blockNonKOffset), tStrides[rank - 2]);
       for (int i = 0; i < mapping.size(); ++i) {
-        // swap row and col, because operand B layout is a transposed operand A
-        // layout
         Value row = mapping[i][1];
         Value col = mapping[i][0];
-        inblockOffset[i] =
-            computeOffset(rewriter, loc, row, col, smemObj, srcLayout);
-      }
-      for (int block = 0; block < numBlocks; ++block) {
-        int blockNonKOffset = block * nonKDim * warpsPerBlock;
-        Value offAdjust = mul(i32_val(blockNonKOffset), tStrides[rank - 2]);
-        for (int i = 0; i < mapping.size(); ++i)
-          bOffsets[block * blockSize + i] = add(offAdjust, inblockOffset[i]);
+        col = add(col, i32_val(blockNonKOffset));
+        Value offset = computeOffset(rewriter, loc, row, col, smemObj, srcLayout);
+        bOffsets[block * blockSize + i] = offset;
       }
     }
   }
