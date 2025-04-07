@@ -23,7 +23,8 @@
 #undef DEBUG_TYPE
 #define DEBUG_TYPE "tritonamdgpu-convert-buffer-ops"
 #define DBGS() (llvm::dbgs() << "[" DEBUG_TYPE "]: ")
-#define LDBG(X) LLVM_DEBUG(DBGS() << X << "\n")
+// #define LDBG_TMP(X) LLVM_DEBUG(DBGS() << X << "\n")
+#define LDBG_TMP(X) (llvm::outs() << X << "\n")
 
 using namespace mlir;
 using ::mlir::LLVM::AMD::getVectorSize;
@@ -44,7 +45,7 @@ bool verifyNonSmallerByAssumption(
       case arith::CmpIPredicate::sge:
       case arith::CmpIPredicate::sgt: {
         if (cmpOp.getLhs() == expr && matchesOther(cmpOp.getRhs())) {
-          LDBG("  " << expr << " non-neg by assumption " << cmpOp);
+          LDBG_TMP("  " << expr << " non-neg by assumption " << cmpOp);
           return true;
         }
         break;
@@ -52,7 +53,7 @@ bool verifyNonSmallerByAssumption(
       case arith::CmpIPredicate::sle:
       case arith::CmpIPredicate::slt: {
         if (cmpOp.getRhs() == expr && matchesOther(cmpOp.getLhs())) {
-          LDBG("  " << expr << " non-neg by assumption " << cmpOp);
+          LDBG_TMP("  " << expr << " non-neg by assumption " << cmpOp);
           return true;
         }
         break;
@@ -82,7 +83,7 @@ bool verifyNonSmallerByAssumption(Value expr,
 
 bool verifyNonNegativeExpr(Value expr, const DenseSet<Value> &assumptions,
                            std::shared_ptr<DataFlowSolver> solver) {
-  LDBG("Determing if non-negative: " << expr);
+  LDBG_TMP("Determing if non-negative: " << expr);
 
   auto nonNegativePred = [&solver](Value v) -> bool {
     if (const auto *r =
@@ -107,7 +108,7 @@ bool verifyNonNegativeExpr(Value expr, const DenseSet<Value> &assumptions,
   // Recurse if the operation is defined
   Operation *op = expr.getDefiningOp();
   if (!op) {
-    LDBG("  No defining op, assuming possibly negative");
+    LDBG_TMP("  No defining op, assuming possibly negative");
     return false;
   }
 
@@ -212,7 +213,7 @@ bool verifyNonNegativeExpr(Value expr, const DenseSet<Value> &assumptions,
           })
           .Default([&](Operation *) {
             // Conservatively assume that the expression is negative
-            LDBG("  Unhandled op, cannot assume non-negative");
+            LDBG_TMP("  Unhandled op, cannot assume non-negative");
             return false;
           });
   return nonNegative;
@@ -225,22 +226,26 @@ bool canUseBufferOps(Value ptr, const DenseSet<Value> &assumptions,
   // 1. Check if the pointer is uniform: i.e., if it comes from a uniform
   // pointer(splatted) and non-uniform offset addition
 
-  LDBG("Buffer op checks for: " << ptr);
+  LDBG_TMP("Buffer op checks for: " << ptr);
   auto addPtrOp = ptr.getDefiningOp<triton::AddPtrOp>();
+  llvm::outs() << "loc1\n";
   if (!addPtrOp)
     return false;
 
-  auto maybeSplatOp = addPtrOp.getPtr().getDefiningOp<triton::SplatOp>();
+    llvm::outs() << "loc2\n";
+    auto maybeSplatOp = addPtrOp.getPtr().getDefiningOp<triton::SplatOp>();
   if (!maybeSplatOp)
     return false;
-  LDBG("Pattern matched");
+  LDBG_TMP("Pattern matched");
 
+  llvm::outs() << "loc3\n";
   // 2. Check if the offset is a 32-bit tensor
   Value offset = addPtrOp.getOffset();
   if (cast<RankedTensorType>(offset.getType()).getElementTypeBitWidth() != 32)
     return false;
-  LDBG("32 bit offset");
+  LDBG_TMP("32 bit offset");
 
+  llvm::outs() << "loc4\n";
   return verifyNonNegativeExpr(offset, assumptions, std::move(solver));
 }
 
@@ -278,7 +283,8 @@ struct ConvertTritonAtomicRMWOpToBufferAtomicRMW
   mlir::LogicalResult
   matchAndRewrite(triton::AtomicRMWOp op,
                   PatternRewriter &rewriter) const override {
-    LDBG("Try to convert: " << op);
+    llvm::outs() << "Try to convert: " << op << "\n";
+    LDBG_TMP("Try to convert: " << op);
     Value ptr = op.getPtr();
     auto atomicRmwOp = op.getAtomicRmwOp();
     auto sem = op.getSem();
@@ -287,6 +293,7 @@ struct ConvertTritonAtomicRMWOpToBufferAtomicRMW
     // In addition to the `canUserBufferOps` check, we should ensure that
     // 1. Perform the canUserBufferOps check
     if (!canUseBufferOps(ptr, assumptions, solver)) {
+      llvm::outs() << "canUseBufferOps_____Failed\n";
       return rewriter.notifyMatchFailure(op, "canUseBufferOps check failed");
     }
 
@@ -299,7 +306,8 @@ struct ConvertTritonAtomicRMWOpToBufferAtomicRMW
     default:
       return rewriter.notifyMatchFailure(op, "RMW with unsupported scope");
     }
-    LDBG("RMW supported scope");
+    LDBG_TMP("RMW supported scope");
+    llvm::outs() << "RMW supported scope\n";
 
     // 3. Check the memory ordering.
     //    TODO: support monotonic
@@ -329,7 +337,7 @@ struct ConvertTritonAtomicRMWOpToBufferAtomicRMW
     if (!isSupportedType) {
       return rewriter.notifyMatchFailure(op, "RMW with unsupported type");
     }
-    LDBG("RMW supported type");
+    LDBG_TMP("RMW supported type");
 
     auto vecSize = getVectorSize(ptr, axisAnalysisPass);
     // f16/bf16 dtypes could only be efficiently calculated using instructions
@@ -338,7 +346,7 @@ struct ConvertTritonAtomicRMWOpToBufferAtomicRMW
       return rewriter.notifyMatchFailure(
           op, "RMW float 16 dtypes must be aligned by 2");
     }
-    LDBG("RMW passed alignment check");
+    LDBG_TMP("RMW passed alignment check");
 
     // 5. Check if the RMWOp is supported
     switch (atomicRmwOp) {
@@ -358,7 +366,7 @@ struct ConvertTritonAtomicRMWOpToBufferAtomicRMW
       return rewriter.notifyMatchFailure(op, "RMW with unsupported op: " +
                                                  rmwOpStr);
     }
-    LDBG("RMW supported Op");
+    LDBG_TMP("RMW supported Op");
 
     // 6. Buffer atomics support 32 and 64-bit operations, so inputs must be at
     //    least 32-bits. Otherwise, fall back to the existing path for atomics
@@ -375,6 +383,7 @@ struct ConvertTritonAtomicRMWOpToBufferAtomicRMW
       opBitWidth = opValueType.getIntOrFloatBitWidth();
     }
 
+    llvm::outs() << "opBitWidth = " << opBitWidth << "\n";
     if (opBitWidth < 32) {
       return rewriter.notifyMatchFailure(op, "RMW requires opBitWidth >= 32");
     }
@@ -414,7 +423,7 @@ struct ConvertTritonLoadToBufferLoad : public mlir::OpRewritePattern<SourceOp> {
 
   mlir::LogicalResult
   matchAndRewrite(SourceOp op, PatternRewriter &rewriter) const override {
-    LDBG("Try to convert: " << op);
+    LDBG_TMP("Try to convert: " << op);
     Value ptr = op.getOperand(0);
 
     if (canUseBufferOps(ptr, assumptions, solver)) {
@@ -463,7 +472,7 @@ struct ConvertTritonLoadToBufferLoad : public mlir::OpRewritePattern<SourceOp> {
       return success();
     }
 
-    LDBG("Failed to convert: " << op);
+    LDBG_TMP("Failed to convert: " << op);
     return rewriter.notifyMatchFailure(op, "Failed to convert LoadOp");
   }
 
@@ -486,7 +495,7 @@ struct ConvertTritonStoreToBufferStore
   mlir::LogicalResult
   matchAndRewrite(triton::StoreOp op,
                   PatternRewriter &rewriter) const override {
-    LDBG("Try to convert: " << op);
+    LDBG_TMP("Try to convert: " << op);
     Value ptr = op.getPtr();
 
     if (canUseBufferOps(ptr, assumptions, solver)) {
@@ -504,7 +513,7 @@ struct ConvertTritonStoreToBufferStore
           maybeMask);
       return success();
     }
-    LDBG("Failed to convert: " << op);
+    LDBG_TMP("Failed to convert: " << op);
     return rewriter.notifyMatchFailure(op, "Failed to convert StoreOp");
   }
 
