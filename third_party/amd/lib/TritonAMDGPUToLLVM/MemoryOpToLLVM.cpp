@@ -119,11 +119,11 @@ public:
     Attribute srcLayout = srcTy.getEncoding();
     Attribute dstLayout = dstTy.getEncoding();
 
-    if (canUseTransLoad(op, srcTy, dstTy)) {
-      assert(checkPerformanceProperties(srcTy, dstTy));
-      return lowerSharedToDotOperandTransLL(op, adaptor, getTypeConverter(),
-                                            rewriter);
-    }
+    // if (canUseTransLoad(op, srcTy, dstTy)) {
+    //   // assert(checkPerformanceProperties(srcTy, dstTy));
+    //   return lowerSharedToDotOperandTransLL(op, adaptor, getTypeConverter(),
+    //                                         rewriter);
+    // }
     return failure();
   }
 

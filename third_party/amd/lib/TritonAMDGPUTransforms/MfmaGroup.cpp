@@ -151,13 +151,13 @@ MfmaDatabase::MfmaDatabase(MLIRContext *context) {
 
       // f16 inputs
       // mfma_f32_32x32x16_f16 & mfma_f32_32x32x8f16
-      TRITON_MFMA_v4_2case(32, 32, f16T, f16T, mfma_f32_32x32x16_f16, 16, 8,
-                           mfma_f32_32x32x8f16, 8, 4),
+      TRITON_MFMA_v4_2case(32, 32, f16T, f16T, mfma_f32_32x32x8f16, 8, 4,
+                           mfma_f32_32x32x16_f16, 16, 8),
       // mfma_f32_32x32x8f16
       TRITON_MFMA_v1to3(32, 32, f16T, f16T, mfma_f32_32x32x8f16, 8, 4),
       // mfma_f32_16x16x32_f16 & mfma_f32_16x16x16f16
-      TRITON_MFMA_v4_2case(16, 16, f16T, f16T, mfma_f32_16x16x32_f16, 32, 8,
-                           mfma_f32_16x16x16f16, 16, 4),
+      TRITON_MFMA_v4_2case(16, 16, f16T, f16T, mfma_f32_16x16x16f16, 16, 4,
+                           mfma_f32_16x16x32_f16, 32, 8),
       // mfma_f32_16x16x16f16
       TRITON_MFMA_v1to3(16, 16, f16T, f16T, mfma_f32_16x16x16f16, 16, 4),
       // mfma_f32_4x4x4f16
@@ -167,15 +167,15 @@ MfmaDatabase::MfmaDatabase(MLIRContext *context) {
 
       // bf16 inputs
       // mfma_f32_32x32x16_bf16 & mfma_f32_32x32x8_bf16_1K
-      TRITON_MFMA_v4_2case(32, 32, bf16T, bf16T, mfma_f32_32x32x16_bf16, 16, 8,
-                           mfma_f32_32x32x8bf16_1k, 8, 4),
+      TRITON_MFMA_v4_2case(32, 32, bf16T, bf16T, mfma_f32_32x32x8bf16_1k, 8, 4,
+                           mfma_f32_32x32x16_bf16, 16, 8),
       TRITON_MFMA_v(3, 32, 32, bf16T, bf16T, mfma_f32_32x32x8bf16_1k, 8, 4),
       // mfma_f32_32x32x8_bf16_1K & mfma_f32_32x32x4bf16_1k
       TRITON_MFMA_v2_2case(32, 32, bf16T, bf16T, mfma_f32_32x32x8bf16_1k, 8, 4,
                            mfma_f32_32x32x4bf16_1k, 4, 2),
       // mfma_f32_16x16x32_bf16 & mfma_f32_16x16x16_bf16_1K
-      TRITON_MFMA_v4_2case(16, 16, bf16T, bf16T, mfma_f32_16x16x32_bf16, 32, 8,
-                           mfma_f32_16x16x16bf16_1k, 16, 4),
+      TRITON_MFMA_v4_2case(16, 16, bf16T, bf16T, mfma_f32_16x16x16bf16_1k, 16, 4,
+                           mfma_f32_16x16x32_bf16, 32, 8),
       TRITON_MFMA_v(3, 16, 16, bf16T, bf16T, mfma_f32_16x16x16bf16_1k, 16, 4),
       // mfma_f32_16x16x16_bf16_1K & mfma_f32_16x16x8_bf16
       TRITON_MFMA_v2_2case(16, 16, bf16T, bf16T, mfma_f32_16x16x16bf16_1k, 16,
