@@ -1,8 +1,9 @@
 add_triton_library(TritonNVIDIAGPUToLLVM
-    ConvertLayoutOpToLLVM/SharedToDotOperandMMAv2OrV3.cpp
     ConvertLayoutOpToLLVM.cpp
+    ConvertWarpSpecializeToLLVM.cpp
     MemoryOpToLLVM.cpp
     DotOpToLLVM/MMAv2.cpp
+    DotOpToLLVM/MMAv5.cpp
     DotOpToLLVM/WGMMA.cpp
     DotOpToLLVM.cpp
     ElementwiseOpToLLVM.cpp
@@ -11,11 +12,12 @@ add_triton_library(TritonNVIDIAGPUToLLVM
     TritonGPUToLLVM.cpp
     TMAToLLVM.cpp
     SPMDOpToLLVM.cpp
+    TensorMemoryToLLVM.cpp
     TensorPtrOpsToLLVM.cpp
     ClusterOpsToLLVM.cpp
     PTXAsmFormat.cpp
     Utility.cpp
-    UpcastMXFPToLLVM.cpp
+    Fp4ToFpOpToLLVM.cpp
     TargetInfo.cpp
 
     DEPENDS

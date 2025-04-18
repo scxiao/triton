@@ -21,8 +21,6 @@ namespace ttng = ::mlir::triton::nvidia_gpu;
 #define GEN_PASS_CLASSES
 #include "triton/Dialect/TritonNvidiaGPU/Transforms/Passes.h.inc"
 
-using ::mlir::triton::gpu::SharedEncodingAttr;
-
 namespace {
 
 struct FenceInsertionPass
@@ -40,19 +38,20 @@ public:
     // Only insert fences for compute capability 9.0
     if (computeCapability < 90)
       return;
-    if (::triton::tools::getBoolEnv("DISABLE_MMA_V3"))
-      return;
     ModuleOp mod = getOperation();
     mod.walk([&](Operation *op) {
-      if (!isa<ttng::WarpGroupDotOp>(op))
+      bool isMMAv3 = isa<ttng::WarpGroupDotOp>(op);
+      if (!isMMAv3 && !isa<ttng::MMAv5OpInterface>(op))
         return WalkResult::advance();
       OpBuilder builder(op);
       auto a = op->getOperand(0);
       auto b = op->getOperand(1);
-      auto mmaEncoding = dyn_cast<ttg::NvidiaMmaEncodingAttr>(
-          cast<RankedTensorType>(op->getResult(0).getType()).getEncoding());
-      if (!mmaEncoding || !mmaEncoding.isHopper())
-        return WalkResult::advance();
+      if (isMMAv3) {
+        auto mmaEncoding = dyn_cast<ttg::NvidiaMmaEncodingAttr>(
+            cast<RankedTensorType>(op->getResult(0).getType()).getEncoding());
+        if (!mmaEncoding || !mmaEncoding.isHopper())
+          return WalkResult::advance();
+      }
       bool aDependsOnShared = dependOnSharedEncOperand(a);
       bool bDependsOnShared = dependOnSharedEncOperand(b);
       if (!aDependsOnShared && !bDependsOnShared)
@@ -79,7 +78,7 @@ private:
     static DenseSet<std::pair<Operation *, unsigned>> trace;
     auto op = operand.getDefiningOp();
     // avoid redundant insertion
-    if (op && op->hasTrait<OpTrait::DotLike>())
+    if (op && isa<mlir::triton::DotOpInterface>(op))
       return false;
     // reach convertlayout
     if (op && isa<ttg::LocalAllocOp>(op) &&

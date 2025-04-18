@@ -1,32 +1,36 @@
+from __future__ import annotations
 import ast
 import textwrap
 import inspect
-from typing import Tuple
+from typing import Tuple, List, Dict
 
 import math
 import numpy as np
 
 import triton
 import triton.language as tl
+import dataclasses
 from dataclasses import dataclass
+
+from triton.language import semantic
+from triton.tools.tensor_descriptor import TensorDescriptor
 from .errors import InterpreterError
 from functools import partial
 from .._C.libtriton import interpreter as _interpreter
 from .._C.libtriton import ir as _ir
 
 
+@dataclass
 class TensorHandle:
-
-    def __init__(self, data, dtype):
-        '''
-            data: numpy array
-            dtype: triton type, either pointer_type or scalar_type.
-            we don't store block_type here because the shape information is already available in the data field
-            attr: a dictionary of attributes
-        '''
-        self.data = data
-        self.dtype = dtype
-        self.attr = {}
+    '''
+        data: numpy array
+        dtype: triton type, either pointer_type or scalar_type.
+        we don't store block_type here because the shape information is already available in the data field
+        attr: a dictionary of attributes
+    '''
+    data: np.array
+    dtype: tl.dtype
+    attr: Dict = dataclasses.field(default_factory=dict)
 
     def __bool__(self):
         return bool(self.data.all())
@@ -66,6 +70,44 @@ class BlockPointerHandle:
             ptrs = ptrs + (n_bytes * off * self.strides[dim].data).astype(np.uint64)
             if dim in boundary_check:
                 masks = masks & (off < self.shape[dim].data) & (off >= 0)
+        ptrs = TensorHandle(ptrs, self.base.dtype.scalar)
+        return ptrs, masks
+
+
+class TensorDescHandle:
+
+    def __init__(self, base: TensorHandle, shape: List[TensorHandle], strides: List[TensorHandle],
+                 block_shape: List[int]):
+        self.base = base
+        self.ndim = len(shape)
+        self.shape = shape
+        self.strides = strides
+        self.block_shape = block_shape
+
+    def validate(self):
+        assert self.base.data.item() % 16 == 0, "base must be 16-byte aligned"
+        assert len(self.strides) == self.ndim
+        assert len(self.block_shape) == self.ndim
+
+        for stride in self.strides[:-1]:
+            assert stride.data.item() % 16 == 0, "stride must be 16-byte aligned"
+        assert self.strides[-1].data.item() == 1, "last dim must be contiguous"
+
+    def materialize_pointers(self, offsets: List[TensorHandle]):
+        assert len(offsets) == self.ndim
+        scalar_ty = self.base.dtype.element_ty
+        itemsize = scalar_ty.primitive_bitwidth // 8
+        assert (offsets[-1].data * itemsize) % 16 == 0, "block offset start must be 16-byte aligned"
+
+        ptrs = np.broadcast_to(self.base.data, self.block_shape)
+        masks = np.ones(self.block_shape, dtype=bool)
+        for dim in range(len(self.block_shape)):
+            bcast_dims = [1] * len(self.block_shape)
+            bcast_dims[dim] = self.block_shape[dim]
+            off = (offsets[dim].data + np.arange(self.block_shape[dim])).reshape(bcast_dims)
+            ptrs = ptrs + (itemsize * off * self.strides[dim].data).astype(np.uint64)
+            masks = masks & (0 <= off) & (off < self.shape[dim].data)
+        assert ptrs.dtype == np.uint64
         ptrs = TensorHandle(ptrs, self.base.dtype.scalar)
         return ptrs, masks
 
@@ -268,6 +310,9 @@ class InterpreterBuilder:
 
     def get_double_ty(self):
         return tl.float64
+
+    def get_int1_ty(self):
+        return tl.int1
 
     def get_int8_ty(self):
         return tl.int8
@@ -672,10 +717,52 @@ class InterpreterBuilder:
             ret.offsets[i].data += offsets[i].data
         return ret
 
+    def create_make_tensor_descriptor(
+        self,
+        base: TensorHandle,
+        shape: List[TensorHandle],
+        strides: List[TensorHandle],
+        tensor_shape: List[int],
+    ):
+        desc = TensorDescHandle(base, shape, strides, tensor_shape)
+        desc.validate()
+        return desc
+
+    def create_descriptor_load(self, desc: TensorDescHandle, indices: List[TensorHandle], cache_modifier,
+                               eviction_policy):
+        assert isinstance(desc, TensorDescHandle)
+        ptrs, mask = desc.materialize_pointers(indices)
+        return self.create_masked_load(ptrs, mask, other=None, cache_modifier=cache_modifier,
+                                       eviction_policy=eviction_policy, is_volatile=False)
+
+    def create_descriptor_store(self, desc: TensorDescHandle, value: TensorHandle, indices: List[TensorHandle]):
+        ptrs, mask = desc.materialize_pointers(indices)
+        return self.create_masked_store(ptrs, value, mask, None, None)
+
+    def create_descriptor_gather(self, desc: TensorDescHandle, x_offsets: TensorHandle, y_offset: TensorHandle, type):
+        dtype = desc.base.dtype.element_ty
+        np_dtype = _get_np_dtype(dtype)
+        result = np.zeros([x_offsets.data.shape[0], desc.block_shape[-1]], dtype=np_dtype)
+        cache_modifier = None
+        eviction_policy = None
+        for i, x_offset in enumerate(x_offsets.data):
+            indices = [TensorHandle(x_offset, tl.int32), y_offset]
+            result[i, :] = self.create_descriptor_load(desc, indices, cache_modifier, eviction_policy).data
+        return TensorHandle(result, dtype)
+
+    def create_descriptor_scatter(self, desc: TensorDescHandle, value: TensorHandle, x_offsets: TensorHandle,
+                                  y_offset: TensorHandle):
+        for i, x_offset in enumerate(x_offsets.data):
+            slice = TensorHandle(value.data[i], value.dtype)
+            indices = [TensorHandle(x_offset, tl.int32), y_offset]
+            self.create_descriptor_store(desc, slice, indices)
+
     def get_all_ones_value(self, type):
         np_type = _get_np_dtype(type)
         if "int" in np_type.name:
             return TensorHandle(np.full(1, -1, dtype=np_type), type.scalar)
+        elif np_type == np.bool_:
+            return TensorHandle(np.full(1, True, dtype=np_type), type.scalar)
         else:
             raise TypeError(f"unsupported type {type}")
 
@@ -703,7 +790,12 @@ def _patch_lang_tensor(tensor):
         return bool(data) if data.size == 1 else True
 
     def _get_transpose(self):
-        return tl.core.tensor(TensorHandle(np.transpose(self.handle.data), self.handle.dtype), self.dtype.scalar)
+        handle = TensorHandle(np.transpose(self.handle.data), self.handle.dtype)
+        assert self.type.is_block()
+        block_shape = list(self.type.shape)
+        block_shape[-1], block_shape[-2] = block_shape[-2], block_shape[-1]
+        res_ty = tl.core.block_type(self.dtype, block_shape)
+        return tl.core.tensor(handle, res_ty)
 
     tensor.__index__ = lambda self: int(self.handle.data)
     tensor.__bool__ = lambda self: _get_bool(self)
@@ -712,7 +804,7 @@ def _patch_lang_tensor(tensor):
     tensor.T = property(_get_transpose)
 
 
-class ReduceScanOpIneterface:
+class ReduceScanOpInterface:
 
     def __init__(self, axis, combine_fn):
         self.axis = axis
@@ -740,15 +832,13 @@ class ReduceScanOpIneterface:
 
     def apply(self, input):
         if not isinstance(input, tuple):
-            input = (input, )
+            return self.apply((input, ))[0]
         self.check_tensor(input)
-        return self.apply_impl(input)
-
-    def apply_impl(self, input):
-        raise NotImplementedError("apply_impl not implemented")
+        ret = self.apply_impl(input)
+        return tuple(ret) if isinstance(ret, (list, tuple)) else (ret, )
 
 
-class ReduceOps(ReduceScanOpIneterface):
+class ReduceOps(ReduceScanOpInterface):
 
     def __init__(self, axis, combine_fn, keep_dims):
         super().__init__(axis, combine_fn)
@@ -805,7 +895,7 @@ class ReduceOps(ReduceScanOpIneterface):
                 # Take a scalar
                 data = data.item()
             ret.append(self.to_tensor(data, input[i].dtype))
-        return ret[0] if len(ret) == 1 else tuple(ret)
+        return ret
 
     def min_max(self, input, val_reduce_op, idx_reduce_op=None):
         # If input is a tuple, it must be (val, index), and we only take val
@@ -844,7 +934,7 @@ class ReduceOps(ReduceScanOpIneterface):
             return self.generic_reduce(input)
 
 
-class ScanOps(ReduceScanOpIneterface):
+class ScanOps(ReduceScanOpInterface):
 
     def __init__(self, axis, combine_fn, reverse):
         super().__init__(axis, combine_fn)
@@ -903,7 +993,7 @@ class ScanOps(ReduceScanOpIneterface):
         if self.reverse:
             for arg in ret:
                 arg.handle.data = np.flip(arg.handle.data, axis=self.axis)
-        return len(ret) == 1 and ret[0] or tuple(ret)
+        return ret
 
 
 def _patch_reduce_scan():
@@ -1010,6 +1100,16 @@ def _patch_lang(fn):
             _patch_builtin(lang.math, interpreter_builder)
         _patch_lang_tensor(lang.tensor)
         _patch_lang_core(lang)
+    _patch_builtin(tl.core.tensor_descriptor_base, interpreter_builder)
+
+
+def _tuple_create(arg, contents):
+    # NamedTuples and tuples have different construction semantics. NamedTuple
+    # has a constructor that takes individual arguments, while tuple takes an
+    # iterable. Both have type "tuple" making it difficult to distinguish
+    # between them, but only NamedTuple has "_fields" and apparently this is how
+    # everyone does the check.
+    return type(arg)(*contents) if hasattr(arg, "_fields") else type(arg)(contents)
 
 
 # TODO: wrap everything in triton tensors
@@ -1033,6 +1133,19 @@ def _implicit_cvt(arg):
         ty = tl.str_to_ty(triton.runtime.jit.mangle_type(arg))
         handle = TensorHandle(np.array([arg.data_ptr()], dtype=np.uint64), ty)
         return tl.tensor(handle, ty)
+    elif isinstance(arg, tuple):
+        return _tuple_create(arg, map(_implicit_cvt, arg))
+    elif isinstance(arg, TensorDescriptor):
+        strides = [_implicit_cvt(s) for s in arg.strides]
+        assert arg.strides[-1] == 1
+        strides[-1] = tl.constexpr(1)
+        return semantic.make_tensor_descriptor(
+            base=_implicit_cvt(arg.base),
+            shape=[_implicit_cvt(s) for s in arg.shape],
+            strides=strides,
+            block_shape=[tl.constexpr(b) for b in arg.block_shape],
+            builder=InterpreterBuilder(),
+        )
     return arg
 
 
@@ -1063,14 +1176,29 @@ class GridExecutor:
         self.constexprs = [name for name in arg_names if __annotations__.get(name) == "constexpr"]
 
     def _init_args_hst(self, args_dev, kwargs):
+        storages = {}
 
         def _to_cpu(arg):
-            if not hasattr(arg, "data_ptr"):
+            if isinstance(arg, tuple):
+                return _tuple_create(arg, map(_to_cpu, arg))
+            elif isinstance(arg, TensorDescriptor):
+                return TensorDescriptor(
+                    _to_cpu(arg.base),
+                    arg.shape,
+                    arg.strides,
+                    arg.block_shape,
+                )
+            elif not hasattr(arg, "data_ptr"):
                 return arg
+
             unwrapped_arg = _unwrap_tensor(arg)
+            if unwrapped_arg.untyped_storage().data_ptr() not in storages:
+                storage = unwrapped_arg.untyped_storage()
+                storages[storage.data_ptr()] = storage.cpu()
+
+            storage = storages[unwrapped_arg.untyped_storage().data_ptr()]
             cpu_arg = unwrapped_arg.new_empty(0, device='cpu')
-            cpu_arg.set_(unwrapped_arg.untyped_storage().cpu(), unwrapped_arg.storage_offset(), unwrapped_arg.size(),
-                         unwrapped_arg.stride())
+            cpu_arg.set_(storage, unwrapped_arg.storage_offset(), unwrapped_arg.size(), unwrapped_arg.stride())
             cpu_arg = _rewrap_tensor(cpu_arg, original_tensor=arg)
             return cpu_arg
 
@@ -1079,24 +1207,33 @@ class GridExecutor:
         # Process keyword arguments
         kwargs_hst = {}
         for key, value in kwargs.items():
-            if hasattr(value, "data_ptr"):
-                kwargs_hst[key] = value.cpu()
-            else:
-                kwargs_hst[key] = value
+            kwargs_hst[key] = _to_cpu(value)
         return args_hst, kwargs_hst
 
     def _restore_args_dev(self, args_dev, args_hst, kwargs, kwargs_hst):
-        for arg_dev, arg_hst in zip(args_dev, args_hst):
+        storages = {}
+
+        def _from_cpu(arg_dev, arg_hst):
             if hasattr(arg_dev, "data_ptr"):
                 # No need to rewrap because this just modifies internal
                 arg_dev, arg_hst = _unwrap_tensor(arg_dev), _unwrap_tensor(arg_hst)
-                arg_dev.untyped_storage().copy_(arg_hst.untyped_storage())
+                storages[arg_dev.untyped_storage().data_ptr()] = (arg_dev.untyped_storage(), arg_hst.untyped_storage())
+            elif isinstance(arg_dev, tuple):
+                for (arg_dev, arg_hst) in zip(arg_dev, arg_hst):
+                    _from_cpu(arg_dev, arg_hst)
+            elif isinstance(arg_dev, TensorDescriptor):
+                _from_cpu(arg_dev.base, arg_hst.base)
+
+        for arg_dev, arg_hst in zip(args_dev, args_hst):
+            _from_cpu(arg_dev, arg_hst)
 
         # Restore keyword arguments
         for key, kwarg_dev in kwargs.items():
             kwarg_hst = kwargs_hst[key]
-            if hasattr(kwarg_dev, "data_ptr"):
-                kwarg_dev.data.copy_(kwarg_hst.to(kwarg_dev.device).data)
+            _from_cpu(kwarg_dev, kwarg_hst)
+
+        for (arg_dev, arg_hst) in storages.values():
+            arg_dev.copy_(arg_hst)
 
     def __call__(self, *args_dev, **kwargs):
         if kwargs.pop("warmup", False):

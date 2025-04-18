@@ -109,7 +109,7 @@ void processActivityKernel(
     }
   } else {
     // Graph kernels
-    // A single grpah launch can trigger multiple kernels.
+    // A single graph launch can trigger multiple kernels.
     // Our solution is to construct the following maps:
     // --- Application threads ---
     // 1. Graph -> numKernels
@@ -189,6 +189,7 @@ struct RoctracerProfiler::RoctracerProfilerPimpl
       : GPUProfiler<RoctracerProfiler>::GPUProfilerPimplInterface(profiler) {}
   virtual ~RoctracerProfilerPimpl() = default;
 
+  void setLibPath(const std::string &libPath) override {}
   void doStart() override;
   void doFlush() override;
   void doStop() override;

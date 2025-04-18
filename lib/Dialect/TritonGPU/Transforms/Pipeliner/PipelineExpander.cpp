@@ -33,6 +33,10 @@
 
 #include "triton/Dialect/TritonGPU/Transforms/PipelineExpander.h"
 
+// FIXME: PipelineExpander should not depend on Triton-specific headers!
+#include "triton/Dialect/TritonGPU/IR/Types.h"
+#include "triton/Dialect/TritonGPU/Transforms/PipeliningUtility.h"
+
 #define DEBUG_TYPE "triton-loop-pipelining"
 #define DBGS() (llvm::dbgs() << "[" DEBUG_TYPE "]: ")
 #define LDBG(X) LLVM_DEBUG(DBGS() << X << "\n")
@@ -109,6 +113,17 @@ public:
   LogicalResult emitEpilogue(RewriterBase &rewriter,
                              llvm::SmallVector<Value> &returnValues);
 };
+
+/// Find operands of all the nested operations within `op`.
+static SetVector<Value> getNestedOperands(Operation *op) {
+  SetVector<Value> operands;
+  op->walk([&](Operation *nestedOp) {
+    for (Value operand : nestedOp->getOperands()) {
+      operands.insert(operand);
+    }
+  });
+  return operands;
+}
 
 bool LoopPipelinerInternal::initializeLoopInfo(
     ForOp op, const triton::PipeliningOption &options) {
@@ -197,29 +212,20 @@ bool LoopPipelinerInternal::initializeLoopInfo(
   // those defined outside of the loop. This means that any dependency within a
   // loop should either be on the immediately preceding iteration, the current
   // iteration, or on variables whose values are set before entering the loop.
-  if (llvm::any_of(forOp.getBody()->getTerminator()->getOperands(),
-                   [this](Value operand) {
-                     Operation *def = operand.getDefiningOp();
-                     return !def ||
-                            (!stages.contains(def) && forOp->isAncestor(def));
-                   })) {
-    LDBG("--only support loop carried dependency with a distance of 1 or "
-         "defined outside of the loop -> BAIL");
-    return false;
+  for (auto &op : forOp.getBody()->without_terminator()) {
+    for (auto operand : getNestedOperands(&op)) {
+      auto [def, distance] = getDefiningOpAndDistance(operand);
+      if (!def)
+        continue;
+      if (distance > 1) {
+        LDBG("--only support loop carried dependency with a distance of 1 or "
+             "defined outside of the loop -> BAIL");
+        return false;
+      }
+    }
   }
   annotateFn = options.annotateFn;
   return true;
-}
-
-/// Find operands of all the nested operations within `op`.
-static SetVector<Value> getNestedOperands(Operation *op) {
-  SetVector<Value> operands;
-  op->walk([&](Operation *nestedOp) {
-    for (Value operand : nestedOp->getOperands()) {
-      operands.insert(operand);
-    }
-  });
-  return operands;
 }
 
 /// Compute unrolled cycles of each op (consumer) and verify that each op is
@@ -248,7 +254,12 @@ bool LoopPipelinerInternal::verifySchedule() {
         continue;
       int64_t producerCycle = it->second;
       if (consumerCycle < producerCycle - numCylesPerIter * distance) {
-        consumer->emitError("operation scheduled before its operands");
+        InFlightDiagnostic diag =
+            consumer->emitWarning("operation scheduled before its operands. "
+                                  "Pipelining will be disabled.");
+        diag.attachNote(producer->getLoc())
+            .append("operand defined here: ")
+            .appendOp(*producer, OpPrintingFlags().printGenericOpForm());
         return false;
       }
     }
@@ -281,7 +292,19 @@ LogicalResult LoopPipelinerInternal::emitPrologue(RewriterBase &rewriter) {
        llvm::zip(forOp.getRegionIterArgs(), forOp.getInitsMutable())) {
     setValueMapping(arg, operand.get(), 0);
   }
+
+  // If the incoming value to an iter arg from the loop yield is defined outside
+  // the loop, then that means the iter arg takes that value for all stages
+  // after the first stage.
   auto yield = cast<scf::YieldOp>(forOp.getBody()->getTerminator());
+  for (auto [arg, operand] :
+       llvm::zip(forOp.getRegionIterArgs(), yield->getOpOperands())) {
+    if (forOp.getBodyRegion().isAncestor(operand.get().getParentRegion()))
+      continue;
+    for (int64_t i = 1; i < maxStage; ++i)
+      setValueMapping(arg, operand.get(), i);
+  }
+
   Location loc = forOp.getLoc();
   SmallVector<Value> predicates(maxStage);
   for (int64_t i = 0; i < maxStage; i++) {
@@ -380,21 +403,7 @@ LoopPipelinerInternal::analyzeCrossStageValues() {
 
 std::pair<Operation *, int64_t>
 LoopPipelinerInternal::getDefiningOpAndDistance(Value value) {
-  int64_t distance = 0;
-  if (auto arg = dyn_cast<BlockArgument>(value)) {
-    if (arg.getOwner() != forOp.getBody())
-      return {nullptr, 0};
-    // Ignore induction variable.
-    if (arg.getArgNumber() == 0)
-      return {nullptr, 0};
-    distance++;
-    value =
-        forOp.getBody()->getTerminator()->getOperand(arg.getArgNumber() - 1);
-  }
-  Operation *def = value.getDefiningOp();
-  if (!def)
-    return {nullptr, 0};
-  return {def, distance};
+  return triton::getDefiningOpAndDistance(forOp, value);
 }
 
 scf::ForOp LoopPipelinerInternal::createKernelLoop(
@@ -412,8 +421,6 @@ scf::ForOp LoopPipelinerInternal::createKernelLoop(
   for (const auto &retVal :
        llvm::enumerate(forOp.getBody()->getTerminator()->getOperands())) {
     Operation *def = retVal.value().getDefiningOp();
-    assert(def && "Only support loop carried dependencies of distance of 1 or "
-                  "outside the loop");
     auto defStage = stages.find(def);
     if (defStage != stages.end()) {
       Value valueVersion =
@@ -534,6 +541,14 @@ LogicalResult LoopPipelinerInternal::createKernel(
       if (arg && arg.getOwner() == forOp.getBody()) {
         Value ret = forOp.getBody()->getTerminator()->getOperand(
             arg.getArgNumber() - 1);
+        if (forOp.isDefinedOutsideOfLoop(ret)) {
+          // Special case for values defined outside the loop accessed with
+          // distance 1.
+          if (useStage != maxStage) {
+            nestedNewOp->setOperand(operand->getOperandNumber(), ret);
+          }
+          continue;
+        }
         Operation *dep = ret.getDefiningOp();
         if (!dep)
           continue;
@@ -628,8 +643,6 @@ LogicalResult LoopPipelinerInternal::createKernel(
   for (const auto &retVal :
        llvm::enumerate(forOp.getBody()->getTerminator()->getOperands())) {
     Operation *def = retVal.value().getDefiningOp();
-    assert(def && "Only support loop carried dependencies of distance of 1 or "
-                  "defined outside the loop");
     auto defStage = stages.find(def);
     if (defStage == stages.end()) {
       for (unsigned int stage = 1; stage <= maxStage; stage++)

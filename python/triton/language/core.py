@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from enum import Enum
 from functools import partial, wraps
 import typing
-from typing import Union, Callable, List, Sequence, TypeVar, Optional
+from typing import Union, Callable, List, Sequence, TypeVar, Optional, Tuple
 import builtins
 from ..runtime.jit import jit
 import inspect
@@ -280,12 +280,46 @@ def check_bit_width(value, shift_value):
             )
 
 
+class base_value:
+    """Base class of values that exist in the triton IR (i.e. not constexprs).
+    """
+    type: base_type
+
+    def _flatten_ir(self, handles: List[ir.value]) -> None:
+        """Flatten frontend value into a sequence of mlir handles, which are appended
+        to the output list
+        """
+        raise NotImplementedError
+
+
+class base_type:
+
+    def __eq__(self, other):
+        raise NotImplementedError("Types must implement __eq__")
+
+    def __ne__(self, other):
+        return not (self == other)
+
+    def _unflatten_ir(self, handles: List[ir.value], cursor: int) -> Tuple[base_value, int]:
+        """Build a frontend value with the current dtype, wrapping a list of existing handles.
+        cursor is the index of the first handle relevant to this value, and the function
+        should return the updated cursor position after any handles consumed by the created value.
+        """
+        raise NotImplementedError
+
+    def mangle(self) -> str:
+        raise NotImplementedError(f"NYI: Type mangling for type {self.__class__}")
+
+    def _flatten_ir_types(self, builder: ir.builder, out: List[ir.type]) -> None:
+        raise NotImplementedError
+
+
 # -----------------------
 # dtype
 # -----------------------
 
 
-class dtype:
+class dtype(base_type):
     SINT_TYPES = ['int8', 'int16', 'int32', 'int64']
     UINT_TYPES = ['int1', 'uint8', 'uint16', 'uint32', 'uint64']
     FP_TYPES = ['fp8e4b15', 'fp8e4nv', 'fp8e4b8', 'fp8e5', 'fp8e5b16', 'fp16', 'bf16', 'fp32', 'fp64']
@@ -474,17 +508,10 @@ class dtype:
     def is_const():
         return False
 
-    @staticmethod
-    def is_tuple():
-        return False
-
     def __eq__(self, other: dtype):
         if not isinstance(other, dtype):
             return False
         return self.name == other.name
-
-    def __ne__(self, other: dtype):
-        return not self.__eq__(other)
 
     def __hash__(self):
         return hash((self.name, ))
@@ -492,6 +519,9 @@ class dtype:
     @property
     def scalar(self):
         return self
+
+    def _flatten_ir_types(self, builder: ir.builder, out: List[ir.type]) -> None:
+        out.append(self.to_ir(builder))
 
     def to_ir(self, builder: ir.builder) -> ir.type:
         if self.name.startswith("fp8"):
@@ -553,6 +583,20 @@ class dtype:
         """Output of repr needs to be an evaluatable expression"""
         return f'triton.language.{self.codegen_name()}'
 
+    def _unflatten_ir(self, handles: List[ir.value], cursor: int) -> Tuple[base_value, int]:
+        return tensor(handles[cursor], self), cursor + 1
+
+    def mangle(self) -> str:
+        if self.is_int():
+            SIGNED = dtype.SIGNEDNESS.SIGNED
+            prefix = 'i' if self.int_signedness == SIGNED else 'u'
+            return prefix + str(self.int_bitwidth)
+        if self.is_floating():
+            return str(self)
+        if self.is_void():
+            return 'V'
+        return super().mangle()
+
 
 # Some functions have a param named `dtype`, which shadows the `dtype` class.
 # We can't change the param name because it is part of function's public API.
@@ -591,19 +635,12 @@ class pointer_type(dtype):
             return False
         return self.element_ty == other.element_ty and self.address_space == other.address_space and self.const == other.const
 
-    def __ne__(self, other: pointer_type) -> bool:
-        return not self.__eq__(other)
-
     @property
     def scalar(self):
         return self
 
-
-class nv_tma_desc_type(pointer_type):
-
-    def __init__(self, const=True, address_space=0):
-        super().__init__(uint8, const=const, address_space=address_space)
-        self.name = 'nv_tma_desc_type'
+    def mangle(self) -> str:
+        return f"P{self.element_ty.mangle()}"
 
 
 class block_type(dtype):
@@ -635,23 +672,25 @@ class block_type(dtype):
     def is_block(self):
         return True
 
-    def get_block_shapes(self) -> List[int]:
+    def get_block_shapes(self) -> Tuple[int]:
         return self.shape
 
-    def __eq__(self, other: block_type) -> bool:
+    def __eq__(self, other) -> bool:
         if not isinstance(other, block_type):
             return False
         return self.element_ty == other.element_ty and self.shape == other.shape
-
-    def __ne__(self, other: block_type) -> bool:
-        return not self.__eq__(other)
 
     @property
     def scalar(self):
         return self.element_ty
 
+    def mangle(self) -> str:
+        elt = self.scalar.mangle()
+        shape = '_'.join(map(str, self.shape))
+        return f'{elt}S{shape}S'
 
-class tuple_type(dtype):
+
+class tuple_type(base_type):
 
     def __init__(self, types, fields=None):
         self.types = types
@@ -664,14 +703,26 @@ class tuple_type(dtype):
     def __iter__(self):
         return iter(self.types)
 
-    def to_ir(self, builder: ir.builder):
-        return [ty.to_ir(builder) for ty in self.types]
+    def _flatten_ir_types(self, builder: ir.builder, out: List[ir.type]):
+        for ty in self.types:
+            if not isinstance(ty, constexpr):
+                ty._flatten_ir_types(builder, out)
 
     def __getitem__(self, index: int) -> dtype:
         return self.types[index]
 
-    def is_tuple(self):
-        return True
+    def __eq__(self, other):
+        return type(self) is type(other) and self.types == other.types and self.fields == other.fields
+
+    def _unflatten_ir(self, handles: List[ir.value], cursor: int) -> Tuple[tuple, int]:
+        values = []
+        for ty in self.types:
+            value, cursor = ty._unflatten_ir(handles, cursor)
+            values.append(value)
+        return tuple(values, self), cursor
+
+    def mangle(self):
+        return 'T' + '_'.join(ty.mangle for ty in self.types) + 'T'
 
 
 class slice_type(dtype):
@@ -727,26 +778,12 @@ def get_int_dtype(bitwidth: int, signed: bool) -> dtype:
         raise ValueError(f'Unsupported bitwidth {bitwidth} and signedness {signed}')
 
 
-class _value:
-    """Base class of values that exist in the triton IR (i.e. not constexprs).
-    """
-
-    def __init__(self, handle):
-        self.handle = handle
-
-    def _flatten_ir(self):
-        raise NotImplementedError
-
-    def _unflatten_ir(self, handles):
-        raise NotImplementedError
-
-
 # -----------------------
 # tensor
 # -----------------------
 
 
-class tensor(_value):
+class tensor(base_value):
     """Represents an N-dimensional array of values or pointers.
 
     :code:`tensor` is the fundamental data structure in Triton programs.  Most
@@ -768,8 +805,9 @@ class tensor(_value):
 
     def __init__(self, handle, type: dtype):
         """Not called by user code."""
+        super().__init__()
         # IR handle
-        super().__init__(handle)
+        self.handle = handle
         # Block shape
         self.shape = type.shape if type.is_block() else ()
         self.numel = 1
@@ -781,12 +819,8 @@ class tensor(_value):
         self.dtype = type.scalar
         self.shape = tuple([constexpr(s) for s in self.shape])
 
-    def _flatten_ir(self):
-        return [self.handle]
-
-    def _unflatten_ir(self, handles):
-        assert len(handles) == 1
-        return tensor(handles[0], self.type)
+    def _flatten_ir(self, handles: List[ir.value]) -> None:
+        handles.append(self.handle)
 
     def __str__(self) -> str:
         # ex. "float32[16, 32]"
@@ -1143,7 +1177,7 @@ class tensor(_value):
     def argmin(self, axis, tie_break_left=True, keep_dims=False) -> tensor:
         ...
 
-    def sum(self, axis=None, keep_dims=False) -> tensor:
+    def sum(self, axis=None, keep_dims=False, dtype=None) -> tensor:
         ...
 
     def xor_sum(self, axis=None, keep_dims=False) -> tensor:
@@ -1162,7 +1196,7 @@ class tensor(_value):
         ...
 
 
-class tuple:
+class tuple(base_value):
 
     def __init__(self, args: list, type: tuple_type = None):
         self.values = [i for i in args]
@@ -1170,7 +1204,7 @@ class tuple:
         def get_type(x):
             if isinstance(x, dtype):
                 return dtype
-            if isinstance(x, int):
+            if isinstance(x, (int, float)):
                 return constexpr
             return x.type
 
@@ -1225,6 +1259,10 @@ class tuple:
     def __len__(self):
         return len(self.values)
 
+    def _flatten_ir(self, handles: List[ir.value]):
+        for v in self.values:
+            v._flatten_ir(handles)
+
 
 class slice:
 
@@ -1235,37 +1273,66 @@ class slice:
         self.type = slice_type()
 
 
-class _experimental_tensor_descriptor_base(_value):
+class tensor_descriptor_base_type(base_type):
+
+    def __init__(self, block_type: block_type):
+        self.block_type = block_type
+
+    def _unflatten_ir(self, handles: List[ir.value], cursor: int) -> Tuple[tensor_descriptor_base, int]:
+        value = tensor_descriptor_base(handles[cursor], self.block_type)
+        return value, cursor + 1
+
+    def _flatten_ir_types(self, builder: ir.builder, out: List[ir.type]) -> None:
+        out.append(builder.create_tensor_descriptor_type(self.block_type.to_ir(builder)))
+
+    def __str__(self) -> str:
+        # ex. "tensor_descriptor<float32[16, 32]>"
+        return f"tensor_descriptor<{self.block_type}>"
+
+    def __eq__(self, other) -> bool:
+        if type(other) is not type(self):
+            return False
+        return self.block_type == other.block_type
+
+    def __neq__(self, other) -> bool:
+        return not (self == other)
+
+    def mangle(self) -> str:
+        return f"TD{self.block_type.mangle()}"
+
+
+class tensor_descriptor_base(base_value):
     """"
     A tensor descriptor with unknown shape and strides
     """
 
-    def __init__(self, handle, type: block_type):
+    def __init__(self, handle, block_type: block_type):
         """Not called by user code."""
-        # IR handle
-        super().__init__(handle)
+        super().__init__()
 
-        self.type = type  # Tensor type (block_type)
-        # Following the practice in pytorch, dtype is scalar type
-        self.dtype = type.scalar
+        self.handle = handle  # IR handle
+        self.type = tensor_descriptor_base_type(block_type)  # Tensor type (block_type)
 
-    def _flatten_ir(self):
-        return [self.handle]
+    def _flatten_ir(self, handles: List[ir.value]) -> None:
+        handles.append(self.handle)
 
-    def _unflatten_ir(self, handles):
-        assert len(handles) == 1
-        return _experimental_tensor_descriptor_base(handles[0], self.type)
+    @property
+    def block_type(self):
+        return self.type.block_type
 
     @property
     def block_shape(self):
-        return self.type.shape
+        return self.type.block_type.shape
+
+    @property
+    def dtype(self):
+        return self.type.block_type.element_ty
 
     def __str__(self) -> str:
-        # ex. "tensor_descriptor<float32[16, 32]>"
-        return f"tensor_descriptor<{self.type}>"
+        return str(self.type)
 
     @builtin
-    def load(self, offsets: List[constexpr | tensor], _builder=None) -> tensor:
+    def load(self, offsets: Sequence[constexpr | tensor], _builder=None) -> tensor:
         """Load a block from the descriptor starting at the given element offsets.
 
         Values outside of the tensor bounds will be filled with zeros.
@@ -1275,7 +1342,7 @@ class _experimental_tensor_descriptor_base(_value):
         return semantic.descriptor_load(self, offsets, "", "", _builder)
 
     @builtin
-    def store(self, offsets: List[constexpr | tensor], value: tensor, _builder=None) -> tensor:
+    def store(self, offsets: Sequence[constexpr | tensor], value: tensor, _builder=None) -> tensor:
         """Store a block from the descriptor starting at the given element offsets.
 
         Values outside of the tensor bounds will be ignored.
@@ -1284,32 +1351,71 @@ class _experimental_tensor_descriptor_base(_value):
         """
         return semantic.descriptor_store(self, value, offsets, _builder)
 
+    @builtin
+    def gather(self, *args, _builder=None) -> tensor:
+        """Gather multiple descriptors worth of data"""
+        assert len(args) == 2, f"descriptor gather only supports 2D indexing, but got {len(args)}"
+        x_offsets = args[0]
+        y_offset = args[1]
+        return semantic.descriptor_gather(self, x_offsets, y_offset, "", "", _builder)
 
-class _experimental_tensor_descriptor(_experimental_tensor_descriptor_base):
+    @builtin
+    def scatter(self, value, *args, _builder=None) -> tensor:
+        """Scatter multiple descriptors worth of data"""
+        assert len(args) == 2, f"descriptor scatter only supports 2D indexing, but got {len(args)}"
+        x_offsets = args[0]
+        y_offset = args[1]
+        return semantic.descriptor_scatter(self, value, x_offsets, y_offset, _builder)
+
+
+class tensor_descriptor_type(tensor_descriptor_base_type):
+
+    def __init__(self, block_type: block_type, shape_type: tuple_type, strides_type: tuple_type):
+        self.block_type = block_type
+        self.shape_type = shape_type
+        self.strides_type = strides_type
+
+    def _unflatten_ir(self, handles: List[ir.value], cursor: int) -> Tuple[tensor_descriptor_base, int]:
+        handle = handles[cursor]
+        cursor += 1
+        shape, cursor = self.shape_type._unflatten_ir(handles, cursor)
+        strides, cursor = self.strides_type._unflatten_ir(handles, cursor)
+        shape = shape.values
+        strides = strides.values
+        value = tensor_descriptor(handle, shape, strides, self.block_type)
+        return value, cursor
+
+    def _flatten_ir_types(self, builder: ir.builder, out: List[ir.type]) -> None:
+        super()._flatten_ir_types(builder, out)
+        self.shape_type._flatten_ir_types(builder, out)
+        self.strides_type._flatten_ir_types(builder, out)
+
+    def __eq__(self, other):
+        return super().__eq__(other) and (self.shape_type == other.shape_type) and (self.strides_type
+                                                                                    == other.strides_type)
+
+
+class tensor_descriptor(tensor_descriptor_base):
     """A descriptor representing a tensor in global memory.
     """
 
-    def __init__(self, handle, shape: List[tensor], strides: List[tensor], type: block_type):
+    def __init__(self, handle, shape: List[tensor], strides: List[tensor], block_type: block_type):
         """Not called by user code."""
         # IR handle
-        super().__init__(handle, type)
+        super().__init__(handle, block_type)
+        self.type = tensor_descriptor_type(
+            block_type,
+            shape_type=tuple_type([s.type for s in shape]),
+            strides_type=tuple_type([s.type for s in strides]),
+        )
         # Global shape
         self.shape = shape
         self.strides = strides
 
-    def _flatten_ir(self):
-        handles = [self.handle]
+    def _flatten_ir(self, handles: List[ir.value]) -> None:
+        handles.append(self.handle)
         handles.extend(s.handle for s in self.shape)
         handles.extend(s.handle for s in self.strides)
-        return handles
-
-    def _unflatten_ir(self, handles):
-        ndim = len(self.shape)
-        assert len(handles) == 2 * ndim + 1
-        handle = handles[0]
-        shape = [tensor(handle, s.type) for handle, s in zip(handles[1:1 + ndim], self.shape)]
-        strides = [tensor(handle, s.type) for handle, s in zip(handles[1 + ndim:], self.strides)]
-        return _experimental_tensor_descriptor(handle, shape, strides, self.type)
 
 
 def get_bool_env_var(var_name):
@@ -1461,7 +1567,7 @@ def trans(input: tensor, *dims, _builder=None):
 
     :param input: The input tensor.
     :param dims: The desired ordering of dimensions.  For example,
-        :code:`(2, 1, 0)` reverses the order dims in a a 3D tensor.
+        :code:`(2, 1, 0)` reverses the order dims in a 3D tensor.
 
     :code:`dims` can be passed as a tuple or as individual parameters: ::
 
@@ -1487,7 +1593,7 @@ def permute(input, *dims, _builder=None):
     :param input: The input tensor.
     :type input: Block
     :param dims: The desired ordering of dimensions.  For example,
-        :code:`(2, 1, 0)` reverses the order dims in a a 3D tensor.
+        :code:`(2, 1, 0)` reverses the order dims in a 3D tensor.
 
     :code:`dims` can be passed as a tuple or as individual parameters: ::
 
@@ -1715,7 +1821,7 @@ def dot(input, other, acc=None, input_precision=None, allow_tf32=None, max_num_i
       the device does not have Tensor Cores or the inputs are not of dtype f32,
       this option is ignored. For devices that do have tensor cores, the
       default precision is tf32.
-    :type input_precision: string. Available options for nvidia: :code:`"tf32"`, :code:`"tf32x3"`, :code:`"ieee"`. Default: :code:`"tf32"`. Available options for amd: :code:`"ieee"`.
+    :type input_precision: string. Available options for nvidia: :code:`"tf32"`, :code:`"tf32x3"`, :code:`"ieee"`. Default: :code:`"tf32"`. Available options for amd: :code:`"ieee"`, (CDNA3 only) :code:`"tf32"`.
     :param allow_tf32: *Deprecated.* If true, input_precision is set to "tf32".
       Only one of :code:`input_precision` and :code:`allow_tf32` can be
       specified (i.e. at least one must be :code:`None`).
@@ -1733,8 +1839,8 @@ def dot(input, other, acc=None, input_precision=None, allow_tf32=None, max_num_i
 
 
 @builtin
-def dot_scaled(lhs, lhs_scale, lhs_format, rhs, rhs_scale, rhs_format, acc=None, fast_math=False, out_dtype=float32,
-               _builder=None):
+def dot_scaled(lhs, lhs_scale, lhs_format, rhs, rhs_scale, rhs_format, acc=None, fast_math=False, lhs_k_pack=True,
+               rhs_k_pack=True, out_dtype=float32, _builder=None):
     """
     Returns the matrix product of two blocks in microscaling format.
 
@@ -1761,11 +1867,15 @@ def dot_scaled(lhs, lhs_scale, lhs_format, rhs, rhs_scale, rhs_format, acc=None,
     :param rhs_format: format of the rhs tensor. Available formats: {:code:`e2m1`, :code:`e4m3`, :code:`e5m2`, :code:`bf16`, :code:`fp16`}.
     :type rhs_format: str
     :param acc: The accumulator tensor. If not None, the result is added to this tensor.
+    :param lhs_k_pack: If false, the lhs tensor is packed into uint8 along M dimension.
+    :type lhs_k_pack: bool, optional
+    :param rhs_k_pack: If false, the rhs tensor is packed into uint8 along N dimension.
+    :type rhs_k_pack: bool, optional
     """
     out_dtype = _constexpr_to_value(out_dtype)
     assert out_dtype == float32, "Only float32 is supported for out_dtype at the moment"
-    return semantic.dot_scaled(lhs, lhs_scale, lhs_format, rhs, rhs_scale, rhs_format, acc, fast_math, out_dtype,
-                               _builder)
+    return semantic.dot_scaled(lhs, lhs_scale, lhs_format, rhs, rhs_scale, rhs_format, acc, fast_math, lhs_k_pack,
+                               rhs_k_pack, out_dtype, _builder)
 
 
 # -----------------------
@@ -1810,8 +1920,9 @@ def load(pointer, mask=None, other=None, boundary_check=(), padding_option="", c
     :type boundary_check: tuple of ints, optional
     :param padding_option: should be one of {"", "zero", "nan"}, the padding value to use while out of bounds. "" means an undefined value.
     :param cache_modifier: changes cache option in NVIDIA PTX
-    :type cache_modifier: str, optional, should be one of {"", "ca", "cg"}, where "ca" stands for
-        cache at all levels and "cg" stands for cache at global level (cache in L2 and below, not L1), see
+    :type cache_modifier: str, optional, should be one of {"", ".ca", ".cg", ".cv"}, where ".ca" stands for
+        cache at all levels, ".cg" stands for cache at global level (cache in L2 and below, not L1),
+        and ".cv" means don’t cache and fetch again. see
         `cache operator <https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#cache-operators>`_ for more details.
     :param eviction_policy: changes eviction policy in NVIDIA PTX
     :type eviction_policy: str, optional
@@ -1834,36 +1945,16 @@ def load(pointer, mask=None, other=None, boundary_check=(), padding_option="", c
 
 
 @builtin
-def _experimental_reinterpret_tensor_descriptor(desc_ptr, block_shape, dtype,
-                                                _builder=None) -> _experimental_tensor_descriptor_base:
-    """
-    Reinterpret a generic pointer as a TMA-backed tensor descriptor object.
-    """
-    block_ty = block_type(_constexpr_to_value(dtype), block_shape)
-    return semantic.reinterpret_tensor_descriptor(desc_ptr, block_ty, _builder)
-
-
-@builtin
-def _experimental_descriptor_load(desc_pointer, offsets, shape, dtype, _builder=None):
-    """
-    Experimental feature to access TMA descriptors loads. This is an escape hatch to easily exercise TTGIR operations.
-    This will be removed in the future and shouldn't be used in production code.
-
-    This loads a tensor of data based on the descriptor and offsets.
-    """
-    desc = _experimental_reinterpret_tensor_descriptor(desc_pointer, shape, dtype, _builder=_builder)
+def load_tensor_descriptor(desc: tensor_descriptor_base, offsets: Sequence[constexpr | tensor],
+                           _builder=None) -> tensor:
+    """Load a block of data from a tensor descriptor."""
     return desc.load(offsets, _builder=_builder)
 
 
 @builtin
-def _experimental_descriptor_store(desc_pointer, value, offsets, _builder=None):
-    """
-    Experimental feature to access TMA descriptors stores. This is an escape hatch to easily exercise TTGIR operations.
-    This will be removed in the future and shouldn't be used in production code.
-
-    This stores a tensor of data based on the descriptor and offsets.
-    """
-    desc = _experimental_reinterpret_tensor_descriptor(desc_pointer, value.shape, value.dtype, _builder=_builder)
+def store_tensor_descriptor(desc: tensor_descriptor_base, offsets: Sequence[constexpr | tensor], value: tensor,
+                            _builder=None) -> tensor:
+    """Store a block of data to a tensor descriptor."""
     return desc.store(offsets, value, _builder=_builder)
 
 
@@ -1946,14 +2037,14 @@ def advance(base, offsets, _builder=None):
 
 
 @builtin
-def _experimental_make_tensor_descriptor(
+def make_tensor_descriptor(
     base: tensor,
     shape: List[tensor],
     strides: List[tensor],
     block_shape: List[constexpr],
     _builder=None,
-) -> _experimental_tensor_descriptor:
-    """Make an experimental tensor descriptor object
+) -> tensor_descriptor:
+    """Make a tensor descriptor object
 
     :param base: the base pointer of the tensor, must be 16-byte aligned
     :param shape: A list of non-negative integers representing the tensor shape
@@ -1966,7 +2057,7 @@ def _experimental_make_tensor_descriptor(
     On NVIDIA GPUs with TMA support, this will result in a TMA descriptor object
     and loads and stores from the descriptor will be backed by the TMA hardware.
 
-    Currently only 2d tensors are supported.
+    Currently only 2-5 dimensional tensors are supported.
 
     Example
     *******
@@ -1974,7 +2065,7 @@ def _experimental_make_tensor_descriptor(
 
         @triton.jit
         def inplace_abs(in_out_ptr, M, N, M_BLOCK: tl.constexpr, N_BLOCK: tl.constexpr):
-            desc = tl._experimental_make_tensor_descriptor(
+            desc = tl.make_tensor_descriptor(
                 in_out_ptr,
                 shape=[M, N],
                 strides=[N, 1],
@@ -2260,7 +2351,8 @@ def clamp(x, min, max, propagate_nan: constexpr = PropagateNan.NONE, _builder=No
 # -----------------------
 
 
-def _add_reduction_docstr(name: str, return_indices_arg: str = None, tie_break_arg: str = None) -> Callable[[T], T]:
+def _add_reduction_docstr(name: str, return_indices_arg: str = None, tie_break_arg: str = None,
+                          dtype_arg: str = None) -> Callable[[T], T]:
 
     def _decorator(func: T) -> T:
         docstr = """
@@ -2280,6 +2372,10 @@ def _add_reduction_docstr(name: str, return_indices_arg: str = None, tie_break_a
             docstr += f"""
     :param {tie_break_arg}: if true, in case of a tie (i.e., multiple elements have the same {name} value), return the left-most index for values that aren't NaN
     :type {tie_break_arg}: bool"""
+        if dtype_arg is not None:
+            docstr += f"""
+    :param {dtype_arg}: the desired data type of the returned tensor. If specified, the input tensor is casted to :code:`{dtype_arg}` before the operation is performed. This is useful for preventing data overflows. If not specified, integer and bool dtypes are upcasted to :code:`tl.int32` and float dtypes are upcasted to at least :code:`tl.float32`.
+    :type {dtype_arg}: tl.dtype"""
 
         func.__doc__ = docstr.format(name=name)
         return func
@@ -2844,9 +2940,23 @@ class range:
     :param loop_unroll_factor: Tells the Triton IR level loop unroller how many
         times to unroll a for loop that this range is used with. Less than 2 for
         this value implies no unrolling.
+    :param disallow_acc_multi_buffer: If true, prevent the accumulator of the dot
+        operation in the loop to be multi-buffered, if applicable.
+    :param flatten: automatically flatten the loop nest starting at this loop to
+        create a single flattened loop. The compiler will try to pipeline the
+        flattened loop which can avoid stage stalling.
+    :param warp_specialize: Enable automatic warp specialization on the loop.
+        The compiler will attempt to partition memory, MMA, and vector
+        operations in the loop into separate async partitions. This will
+        increase the total number of warps required by the kernel.
+
+        Note that warp specialization is only supported on Blackwell GPUs and
+        only works on simple matmul loops. Support for arbitrary loops will be
+        expanded over time.
     """
 
-    def __init__(self, arg1, arg2=None, step=None, num_stages=None, loop_unroll_factor=None):
+    def __init__(self, arg1, arg2=None, step=None, num_stages=None, loop_unroll_factor=None,
+                 disallow_acc_multi_buffer=False, flatten=False, warp_specialize=False):
         if step is None:
             self.step = constexpr(1)
         else:
@@ -2859,6 +2969,9 @@ class range:
             self.end = arg2
         self.num_stages = num_stages
         self.loop_unroll_factor = loop_unroll_factor
+        self.disallow_acc_multi_buffer = disallow_acc_multi_buffer
+        self.flatten = flatten
+        self.warp_specialize = warp_specialize
 
     def __iter__(self):
         raise RuntimeError("tl.range can only be used in @triton.jit'd functions")

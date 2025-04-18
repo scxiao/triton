@@ -62,7 +62,6 @@ def TritonGPUFenceInsertion : Pass<"triton-nvidia-gpu-fence-insertion", "mlir::M
   ];
 }
 
-
 def TritonNvidiaGPUTMALoweringPass : Pass<"triton-nvidia-tma-lowering", "mlir::ModuleOp"> {
   let summary = "lower to TMA load/store operations";
 
@@ -75,6 +74,72 @@ def TritonNvidiaGPUTMALoweringPass : Pass<"triton-nvidia-tma-lowering", "mlir::M
   let dependentDialects = [
     "mlir::triton::nvidia_gpu::TritonNvidiaGPUDialect"
   ];
+}
+
+def TritionTensorMemoryAllocationPass : Pass<"triton-tensor-memory-allocation", "mlir::ModuleOp"> {
+  let summary = "Assign tensor memory allocation";
+
+  let description = [{
+    Decide on tensor memory allocation and assign attributes to each allocation.
+  }];
+
+  let constructor = "mlir::createTensorMemoryAllocationPass()";
+
+  let dependentDialects = [
+    "mlir::triton::nvidia_gpu::TritonNvidiaGPUDialect"
+  ];
+}
+
+def TritonNvidiaGPUMMALoweringPass : Pass<"triton-nvidia-mma-lowering", "mlir::ModuleOp"> {
+  let summary = "lower mma operations if needed";
+
+  let description = [{
+    Lower MMA ops to prepare for conversion to LLVM.
+  }];
+
+  let constructor = "mlir::createTritonNvidiaGPUMMALoweringPass()";
+
+  let dependentDialects = [
+    "mlir::triton::nvidia_gpu::TritonNvidiaGPUDialect"
+  ];
+}
+
+def TritonNvidiaGPUPromoteLHSToTMemPass : Pass<"tritongpu-promote-lhs-to-tmem", "mlir::ModuleOp"> {
+  let summary = "Promote LHS operand of MMAv5 op to Tensor Memory";
+
+  let description = [{
+    Promote LHS operand of MMAv5 op to Tensor Memory.
+  }];
+
+  let constructor = "mlir::createTritonNvidiaGPUPromoteLHSToTMemPass()";
+
+  let dependentDialects = ["mlir::triton::gpu::TritonGPUDialect",
+                           "mlir::triton::nvidia_gpu::TritonNvidiaGPUDialect",
+                           "mlir::triton::TritonDialect"];
+}
+
+def TritonNvidiaGPUOptimizeDescriptorEncodingPass : Pass<"triton-nvidia-optimize-descriptor-encoding", "mlir::ModuleOp"> {
+  let summary = "Set encodings on tensor descriptor types";
+
+  let description = [{
+    Set shared memory encoding on tensor descriptors, which decides the swizzling mode and message size of the tma descriptor.
+  }];
+
+  let dependentDialects = ["mlir::triton::gpu::TritonGPUDialect",
+                           "mlir::triton::nvidia_gpu::TritonNvidiaGPUDialect",
+                           "mlir::triton::TritonDialect"];
+}
+
+def TritonNvidiaGPUOptimizeTMemSubtilingPass : Pass<"triton-nvidia-optimize-tmem-subtiling", "mlir::ModuleOp"> {
+  let summary = "Optimize subtiling.";
+
+  let description = [{
+    Optimize subtiling by trying to split tmem_load when user splits a tensor.
+  }];
+
+  let dependentDialects = ["mlir::triton::gpu::TritonGPUDialect",
+                           "mlir::triton::nvidia_gpu::TritonNvidiaGPUDialect",
+                           "mlir::triton::TritonDialect"];
 }
 
 #endif

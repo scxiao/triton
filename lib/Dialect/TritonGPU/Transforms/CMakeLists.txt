@@ -2,27 +2,40 @@ add_triton_library(TritonGPUTransforms
   AccelerateMatmul.cpp
   Coalesce.cpp
   F32DotTC.cpp
+  FuseNestedLoops.cpp
   CombineTensorSelectAndIf.cpp
-  LoopScheduling.cpp
+  DecomposeScaledBlocked.cpp
+  HoistTMEMAlloc.cpp
   ReduceDataDuplication.cpp
   OptimizeAccumulatorInit.cpp
   OptimizeDotOperands.cpp
   OptimizeThreadLocality.cpp
   Pipeliner/AssignLatencies.cpp
-  Pipeliner/MatmulLoopPipeline.cpp
-  Pipeliner/OuterLoopPipeline.cpp
+  Pipeliner/LowerLoops.cpp
+  Pipeliner/MMAv5PipelineUtility.cpp
+  Pipeliner/ScheduleLoops.cpp
+  Pipeliner/WGMMAPipeline.cpp
   Pipeliner/PipelineExpander.cpp
   Pipeliner/TestPipelineAssignLatencies.cpp
   Pipeliner/TestPipelineScheduleLoop.cpp
+  Pipeliner/TestPipelineLowerLoop.cpp
   Pipeliner/SoftwarePipeliner.cpp
   Pipeliner/TMAStoresPipeline.cpp
+  Pipeliner/MMAv5PipelineUtility.cpp
+  Pipeliner/Partition.cpp
   Pipeliner/PipeliningUtility.cpp
   Pipeliner/Schedule.cpp
   Prefetch.cpp
+  WGMMAPrefetch.cpp
   RemoveLayoutConversions.cpp
   ReorderInstructions.cpp
   CoalesceAsyncCopy.cpp
   Utility.cpp
+  WarpSpecialization/AutomaticWarpSpecialization.cpp
+  WarpSpecialization/LoadMMASpecialization.cpp
+  WarpSpecialization/OptimizePartitionWarps.cpp
+  WarpSpecialization/PartitionLoops.cpp
+  WarpSpecialization/RewritePartitionDependencies.cpp
 
   DEPENDS
   TritonGPUTransformsIncGen
@@ -34,5 +47,6 @@ add_triton_library(TritonGPUTransforms
   TritonIR
   TritonGPUIR
   TritonNvidiaGPUIR
+  TritonToTritonGPU
   MLIRTransformUtils
 )
