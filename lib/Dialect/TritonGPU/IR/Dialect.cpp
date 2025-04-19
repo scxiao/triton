@@ -1776,6 +1776,34 @@ SwizzledSharedEncodingAttr AMDMfmaEncodingAttr::composeSharedLayoutForOperand(
   int innerDimLength = operandShape[sharedOrder[0]];
   int elemsPerOneBanksRow = (numBanks * bankBitWidth) / elemBitWidth;
 
+  int mDim = getMDim();
+  int nDim = getNDim();
+  if ((mDim == 4 && nDim == 64) || (mDim == 64 && nDim == 4)) {
+    // Operands of the layout have following shapes
+    // Large operand:
+    // - shape 64(non-k)x64(k) for 16 bit dtypes
+    // - shape 64(non-k)x16(k) for 32 bit dtypes
+    // Small operand:
+    // - shape 4(non-k)x64(k) for 16 bit dtypes
+    // - shape 4(non-k)x16(k) for 32 bit dtypes
+    const int vecSize = bankBitWidth / elemBitWidth;
+    const int perPhase = std::max(1, numBanks / innerDimLength);
+    const int maxPhase = std::min(numBank, nonKDim) / perPhase;
+
+    // if maxPhase * perPhase is larger than one block of warps,
+    // fallback to unswizzled tensor.
+    // Shared to dot op conversion requires that swizzling patern
+    // fits into one block of warps.
+    auto warpsPerCTA = mfmaEnc.getWarpsPerCTA();
+    if (maxPhase * perPhase > nonKDim * warpsPerCTA[nonKDimNum]) {
+      assert(isKDimInner);
+      maxPhase = 1;
+    }
+
+    return SwizzledSharedEncodingAttr::get(getContext(), vectorSize, 
+      perPhase, maxPhase, sharedOrder, ctaLayout);
+  }
+
   int perPhase = std::max(1, elemsPerOneBanksRow / innerDimLength);
   int maxPhase =
       std::max(std::min(simdWidth / perPhase, innerDimLength / vectorSize), 1u);

@@ -383,7 +383,9 @@ AMDMfmaEncodingAttr::toLinearLayout(ArrayRef<int64_t> shape) const {
   (void)mIndex, (void)nIndex;
 
   assert(((getMDim() == 32 && getNDim() == 32) ||
-          (getMDim() == 16 && getNDim() == 16)) &&
+          (getMDim() == 16 && getNDim() == 16) ||
+          (getMDim() == 4 && getNDim() == 64) ||
+          (getMDim() == 64 && getNDim() == 4)) &&
          "Unsupported mfma type");
 
   MLIRContext *ctx = getContext();
@@ -421,8 +423,7 @@ AMDMfmaEncodingAttr::toLinearLayout(ArrayRef<int64_t> shape) const {
           {{kRegister, {{1, 0}, {2, 0}, {8, 0}, /*gap*/ {16, 0}}},
            {kLane, {{0, 1}, {0, 2}, {0, 4}, {0, 8}, {0, 16}, /*gap*/ {4, 0}}}},
           {outDimNames[order[0]], outDimNames[order[1]]});
-  } else {
-    assert(getMDim() == 16);
+  } else if (getMDim() == 16) {
     // For mfma with 16x16 output, each of the 64 threads holds 4 elements.
     //
     // For the register (i.e., element) dimension, these 4 elements are along
@@ -437,12 +438,31 @@ AMDMfmaEncodingAttr::toLinearLayout(ArrayRef<int64_t> shape) const {
         {outDimNames[order[0]], outDimNames[order[1]]});
     // For mfma.transposed layout, the element ownership among threads are
     // "transposed" within each warp.
-    if (getIsTransposed())
+    if (getIsTransposed()) {
       tileLayout = LinearLayout(
           {{kRegister, {{1, 0}, {2, 0}}},
            {kLane, {{0, 1}, {0, 2}, {0, 4}, {0, 8}, /*gap*/ {4, 0}, {8, 0}}}},
           {outDimNames[order[0]], outDimNames[order[1]]});
+    }
+  } else if (mfma.getMDim() == 4 and mfma.getNDim() == 64) {
+    llvm::outs() << "order[0] = " << order[0] << ", rank = " << rank << "\n";
+    assert(order[0] == rank - 1);
+    tileLayout = LinearLayout(
+        {{kRegister, {{0, 1}, {0, 2}}},
+        {kLane, {{1, 0}, {2, 0}, {4, 0}, {8, 0}, {16, 0}, {32, 0}}}},
+        //  {kLane, {{1, 0}, {2, 0}}}},
+        {outDimNames[order[0]], outDimNames[order[1]]});
+  } else if (mfma.getMDim() == 64 and mfma.getNDim() == 4) {
+    assert(order[0] == rank - 1);
+    tileLayout = LinearLayout(
+        {{kRegister, {{0, 1}, {0, 2}}},
+        {kLane, {{1, 0}, {2, 0}, {0, 4}, {0, 8}, {0, 16}, {0, 32}}}},
+        {outDimNames[order[0]], outDimNames[order[1]]});
+  } else {
+    llvm::report_fatal_error(
+        "Unsupported mfma mfma layout in function mfmaToLinearLayout");
   }
+
   if (hasBatchDim) {
     assert(order[2] == 0);
     // Extend the base vector with one value to accommodate for the batch
