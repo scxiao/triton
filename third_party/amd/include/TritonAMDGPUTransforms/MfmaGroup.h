@@ -20,8 +20,8 @@ struct MfmaIntrinsic {
                                             bool withScale, bool useTF32);
 
   MfmaIntrinsic(StringRef symbol, unsigned m, unsigned n, unsigned k,
-                unsigned kB, Type aET, Type bET)
-      : name(symbol), mDim(m), nDim(n), kDim(k), kBase(kB), aElementType(aET),
+                unsigned kBaseA, unsigned kBaseB, Type aET, Type bET)
+      : name(symbol), mDim(m), nDim(n), kDim(k), kBaseA(kBaseA), kBaseA(kBaseA), aElementType(aET),
         bElementType(bET) {}
   MfmaIntrinsic(const MfmaIntrinsic &other) = default;
   MfmaIntrinsic(MfmaIntrinsic &&other) = default;
@@ -39,7 +39,8 @@ struct MfmaIntrinsic {
   unsigned kDim;
 
   // kBase is the number of elements each thread holds.
-  unsigned kBase;
+  unsigned kBaseA;
+  unsigned kBaseB;
 
   Type aElementType;
   Type bElementType;

@@ -76,14 +76,65 @@ struct DotOpMFMAConversionHelper {
       : mfmaLayout(mfmaLayout), rewriter(rewriter),
         typeConverter(typeConverter), loc(loc), ctx(mfmaLayout.getContext()) {}
 
+  Value broadcastGroup(Value val, int groupId, int numGroups) const {
+    constexpr int waveSize = 64;
+    const int groupSize = waveSize / numGroups;
+    Value lane = getThreadId();
+    // Multiply by 4 because permute requires offset in bytes
+    Value laneOffset = mul(urem(lane, i32_val(groupSize)), i32_val(4));
+    Value permuteAddr = add(laneOffset, i32_val(groupId * groupSize * 4));
+    Type valType = val.getType();
+    Value broadcasted;
+    if (valType.isInteger(32)) {
+      broadcasted = rewriter.create<ROCDL::DsBpermuteOp>(loc, val.getType(),
+                                                         permuteAddr, val);
+    }
+
+    if (valType.isF32()) {
+      val = bitcast(val, i32_ty);
+      broadcasted = rewriter.create<ROCDL::DsBpermuteOp>(loc, val.getType(),
+                                                         permuteAddr, val);
+      broadcasted = bitcast(broadcasted, f32_ty);
+    }
+    if (auto vecTy = mlir::dyn_cast<VectorType>(valType)) {
+      auto vecBitSize = vecTy.getElementType().getIntOrFloatBitWidth() *
+                        vecTy.getNumElements();
+      const int int32VecSize = vecBitSize / 32;
+
+      Type int32VecTy = vec_ty(i32_ty, int32VecSize);
+      Value int32Val = bitcast(val, int32VecTy);
+      Value int32Broadcasted = undef(int32VecTy);
+      for (int i = 0; i < int32VecSize; ++i) {
+        Value int32Chunk = extract_element(i32_ty, int32Val, i32_val(i));
+        Value broadcastedChunk = rewriter.create<ROCDL::DsBpermuteOp>(
+            loc, i32_ty, permuteAddr, int32Chunk);
+        int32Broadcasted = insert_element(int32VecTy, int32Broadcasted,
+                                          broadcastedChunk, i32_val(i));
+      }
+      broadcasted = bitcast(int32Broadcasted, valType);
+    }
+    assert(broadcasted);
+    return broadcasted;
+  }
+
   Value generateMFMAOp(StringRef intrinsicName, Value valA, Value valB,
-                       Value valC) const {
+                       Value valC, int cbsz = 0, int abid = 0,
+                       int blgp = 0) const {
+    assert(cbsz >= 0 && cbsz <= 4);
+    assert(abid >= 0 && abid <= 15);
+    assert(blgp >= 0 && blgp <= 7);
+
     auto b = TritonLLVMOpBuilder(loc, rewriter);
     auto resType = valC.getType();
     Value zeroFlag = b.i32_val(0);
+
+    Value cbszFlag = cbsz != 0 ? i32_val(cbsz) : zeroFlag;
+    Value abidFlag = abid != 0 ? i32_val(abid) : zeroFlag;
+    Value blgpFlag = blgp != 0 ? i32_val(blgp) : zeroFlag;
+
     OperationState loweredOp(loc, intrinsicName);
     loweredOp.addTypes(resType);
-    loweredOp.addOperands({valA, valB, valC, zeroFlag, zeroFlag, zeroFlag});
+    loweredOp.addOperands({valA, valB, valC, cbszFlag, abidFlag, blgpFlag});
     return rewriter.create(loweredOp)->getResult(0);
   }
 
@@ -107,6 +158,47 @@ struct DotOpMFMAConversionHelper {
       llvm::report_fatal_error("unsupported nonKDim in MFMA dot");
     }
     return -1;
+  }
+
+  Value generateMFMATile(StringRef mfmaInsnName, SmallVector<Value> valA,
+                         SmallVector<Value> valB, Value valC, int mDim,
+                         int nDim, bool transpose) const {
+    Value acc;
+    if (mDim == nDim) {
+      assert(valA.size() == 1 && valB.size() == 1);
+      acc = transpose ? generateMFMAOp(mfmaInsnName, valB[0], valA[0], valC)
+                      : generateMFMAOp(mfmaInsnName, valA[0], valB[0], valC);
+    }
+
+    if ((mDim == 4 and nDim == 64) or (mDim == 64 and nDim == 4)) {
+      constexpr int broadcastCtrl = 4;
+      constexpr int numRepeats = 16;
+      acc = valC;
+      for (int kRep = 0; kRep < numRepeats; ++kRep) {
+        if (mDim == 4 and (not transpose)) {
+          assert(valA.size() == 1 and valB.size() == 16);
+          acc = generateMFMAOp(mfmaInsnName, valA[0], valB[kRep], acc,
+                               broadcastCtrl, kRep);
+        }
+        if (mDim == 4 and transpose) {
+          assert(valA.size() == 1 and valB.size() == 16);
+          Value broadcastValA = broadcastGroup(valA[0], kRep, numRepeats);
+          acc = generateMFMAOp(mfmaInsnName, valB[kRep], broadcastValA, acc);
+        }
+        if (nDim == 4 && !transpose) {
+          assert(valA.size() == 16 && valB.size() == 1);
+          Value broadcastValB = broadcastGroup(valB[0], kRep, numRepeats);
+          acc = generateMFMAOp(mfmaInsnName, valA[kRep], broadcastValB, acc);
+        }
+        if (nDim == 4 && transpose) {
+          assert(valA.size() == 16 && valB.size() == 1);
+          acc = generateMFMAOp(mfmaInsnName, valB[0], valA[kRep], acc,
+                               broadcastCtrl, kRep);
+        }
+      }
+    }
+
+    return acc;
   }
 
   Value processSubBlocks(int numSubBlocks, Value acc, bool reduceSubBlocks,
@@ -243,6 +335,21 @@ struct DotOpMFMAConversionHelper {
     rewriter.replaceOp(op, res);
   }
 
+  std::pair<unsigned, unsigned> getKBaseAB(unsigned mDim, unsigned nDim, unsigned kBase) {
+    if (mDim == nDim) {
+      return {kBase, kBase};
+    }
+
+    if (mDim == 64 && nDim == 4) {
+      return {64, 4};
+    } else if (mDim == 4 && nDim == 64) {
+      assert (kBase == 4);
+      return {4, 64};
+    } else {
+      llvm::report_fatal_error("No match found in compute kBase\n");      
+    }
+  }
+
   // Conduct the Dot conversion.
   LogicalResult convertDot(DotOp op, DotOpAdaptor adaptor) const {
     auto tb = TritonLLVMOpBuilder(loc, rewriter);
@@ -277,11 +384,13 @@ struct DotOpMFMAConversionHelper {
       llvm::report_fatal_error("No match found in MFMA database\n");
 
     intrinsicName = maybeMfmaIntrinsic->name;
-    unsigned kBase = maybeMfmaIntrinsic->kBase;
+    auto [kBaseA, kBaseB] = getKBaseAB(mDim, nDim, maybeMfmaIntrinsic->kBase);
 
     auto aEncoding = cast<DotOperandEncodingAttr>(aTensorTy.getEncoding());
     auto bEncoding = cast<DotOperandEncodingAttr>(bTensorTy.getEncoding());
     int kWidth = aEncoding.getKWidth();
+    // may need to change if kWidth of a and b are different
+    assert(kWidth == bEncoding.getKWidth());
 
     // If we are using XF32, the kWidth (and kBase) is double that of F32.
     if (aTensorTy.getElementType().isF32() && allowXF32)
@@ -306,10 +415,10 @@ struct DotOpMFMAConversionHelper {
 
     bool preserveBF16 = intrinsicName.contains(".bf16") && mfmaVersion >= 4;
     auto operandA = getValuesFromDotOperandLayoutStruct(
-        loadedA, numRepB, numRepM, numRepK, kWidth, kBase,
+        loadedA, numRepB, numRepM, numRepK, kWidth, kBaseA,
         aTensorTy.getElementType(), allowXF32, preserveBF16);
     auto operandB = getValuesFromDotOperandLayoutStruct(
-        loadedB, numRepB, numRepN, numRepK, kWidth, kBase,
+        loadedB, numRepB, numRepN, numRepK, kWidth, kBaseB,
         aTensorTy.getElementType(), allowXF32, preserveBF16);
 
     auto dstElemTy = dTensorTy.getElementType();
@@ -337,14 +446,17 @@ struct DotOpMFMAConversionHelper {
           }
           acc = zeroAuxiliarBlocks(subBlocks, acc);
           for (int k = 0; k < numRepK; k++) {
-            for (int kPack = 0; kPack < kWidth / kBase; ++kPack) {
-              acc = mfmaLayout.getIsTransposed()
-                        ? generateMFMAOp(intrinsicName,
-                                         operandB[kPack][{b, n, k}],
-                                         operandA[kPack][{b, m, k}], acc)
-                        : generateMFMAOp(intrinsicName,
-                                         operandA[kPack][{b, m, k}],
-                                         operandB[kPack][{b, n, k}], acc);
+            for (int kPack = 0; kPack < kWidth / kBaseA; ++kPack) {
+              acc = generateMFMATile(mfmaInsnName, operandA[kPack][{b, m, k}],
+                operandB[kPack][{b, n, k}], acc, mDim,
+                nDim, mfmaLayout.getIsTransposed());
+              // acc = mfmaLayout.getIsTransposed()
+              //           ? generateMFMAOp(intrinsicName,
+              //                            operandB[kPack][{b, n, k}],
+              //                            operandA[kPack][{b, m, k}], acc)
+              //           : generateMFMAOp(intrinsicName,
+              //                            operandA[kPack][{b, m, k}],
+              //                            operandB[kPack][{b, n, k}], acc);
               if (!firstMfma)
                 firstMfma = acc;
             }
