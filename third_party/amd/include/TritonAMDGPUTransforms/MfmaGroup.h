@@ -21,7 +21,7 @@ struct MfmaIntrinsic {
 
   MfmaIntrinsic(StringRef symbol, unsigned m, unsigned n, unsigned k,
                 unsigned kBaseA, unsigned kBaseB, Type aET, Type bET)
-      : name(symbol), mDim(m), nDim(n), kDim(k), kBaseA(kBaseA), kBaseA(kBaseA), aElementType(aET),
+      : name(symbol), mDim(m), nDim(n), kDim(k), kBase(kBase), aElementType(aET),
         bElementType(bET) {}
   MfmaIntrinsic(const MfmaIntrinsic &other) = default;
   MfmaIntrinsic(MfmaIntrinsic &&other) = default;
@@ -39,8 +39,7 @@ struct MfmaIntrinsic {
   unsigned kDim;
 
   // kBase is the number of elements each thread holds.
-  unsigned kBaseA;
-  unsigned kBaseB;
+  unsigned kBase;
 
   Type aElementType;
   Type bElementType;

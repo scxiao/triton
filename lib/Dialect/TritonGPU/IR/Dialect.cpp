@@ -1787,7 +1787,7 @@ SwizzledSharedEncodingAttr AMDMfmaEncodingAttr::composeSharedLayoutForOperand(
     // - shape 4(non-k)x64(k) for 16 bit dtypes
     // - shape 4(non-k)x16(k) for 32 bit dtypes
     const int vecSize = bankBitWidth / elemBitWidth;
-    const int perPhase = std::max(1, numBanks / innerDimLength);
+    const int perPhase = std::max((unsigned)1, numBanks / innerDimLength);
     const int maxPhase = std::min(numBank, nonKDim) / perPhase;
 
     // if maxPhase * perPhase is larger than one block of warps,

@@ -444,7 +444,7 @@ AMDMfmaEncodingAttr::toLinearLayout(ArrayRef<int64_t> shape) const {
            {kLane, {{0, 1}, {0, 2}, {0, 4}, {0, 8}, /*gap*/ {4, 0}, {8, 0}}}},
           {outDimNames[order[0]], outDimNames[order[1]]});
     }
-  } else if (mfma.getMDim() == 4 and mfma.getNDim() == 64) {
+  } else if (getMDim() == 4 and getNDim() == 64) {
     llvm::outs() << "order[0] = " << order[0] << ", rank = " << rank << "\n";
     assert(order[0] == rank - 1);
     tileLayout = LinearLayout(
@@ -452,7 +452,7 @@ AMDMfmaEncodingAttr::toLinearLayout(ArrayRef<int64_t> shape) const {
         {kLane, {{1, 0}, {2, 0}, {4, 0}, {8, 0}, {16, 0}, {32, 0}}}},
         //  {kLane, {{1, 0}, {2, 0}}}},
         {outDimNames[order[0]], outDimNames[order[1]]});
-  } else if (mfma.getMDim() == 64 and mfma.getNDim() == 4) {
+  } else if (getMDim() == 64 and getNDim() == 4) {
     assert(order[0] == rank - 1);
     tileLayout = LinearLayout(
         {{kRegister, {{0, 1}, {0, 2}}},
