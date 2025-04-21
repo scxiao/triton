@@ -182,7 +182,7 @@ chooseMfmaInstruction(int mfmaVersion, RankedTensorType cType, Type aElemType,
         mDim = 64;
         nDim = 4;
       } else {
-        assert(opType.getShape()[rank - 1] >= 64 &&
+        assert(inputKSize >= 64 &&
                 "k should be at least 64 to use this layout");
         mDim = 4;
         nDim = 4;

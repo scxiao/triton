@@ -1753,7 +1753,6 @@ SwizzledSharedEncodingAttr AMDMfmaEncodingAttr::composeSharedLayoutForOperand(
   int kDimIndex = operandIdx == 0 ? 1 : 0;
   if (needTrans)
     kDimIndex = 1 - kDimIndex;
-
   bool isKContig = sharedOrder[0] == kDimIndex;
   // GFX950 supports LDS transpose load instructions, so we need swizzling even
   // when K dimension is not the contiguous dimension.
@@ -1778,6 +1777,7 @@ SwizzledSharedEncodingAttr AMDMfmaEncodingAttr::composeSharedLayoutForOperand(
 
   int mDim = getMDim();
   int nDim = getNDim();
+  int nonKDim = operandIdx == 0 ? mDim : nDim;
   if ((mDim == 4 && nDim == 64) || (mDim == 64 && nDim == 4)) {
     // Operands of the layout have following shapes
     // Large operand:
@@ -1788,15 +1788,15 @@ SwizzledSharedEncodingAttr AMDMfmaEncodingAttr::composeSharedLayoutForOperand(
     // - shape 4(non-k)x16(k) for 32 bit dtypes
     const int vecSize = bankBitWidth / elemBitWidth;
     const int perPhase = std::max((unsigned)1, numBanks / innerDimLength);
-    const int maxPhase = std::min(numBank, nonKDim) / perPhase;
+    int maxPhase = std::min((int)numBanks, nonKDim) / perPhase;
 
     // if maxPhase * perPhase is larger than one block of warps,
     // fallback to unswizzled tensor.
     // Shared to dot op conversion requires that swizzling patern
     // fits into one block of warps.
-    auto warpsPerCTA = mfmaEnc.getWarpsPerCTA();
-    if (maxPhase * perPhase > nonKDim * warpsPerCTA[nonKDimNum]) {
-      assert(isKDimInner);
+    auto warpsPerCTA = getWarpsPerCTA();
+    if (maxPhase * perPhase > nonKDim * warpsPerCTA[1 - kDimIndex]) {
+      assert(isKContig);
       maxPhase = 1;
     }
 

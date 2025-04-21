@@ -79,10 +79,11 @@ struct DotOpMFMAConversionHelper {
   Value broadcastGroup(Value val, int groupId, int numGroups) const {
     constexpr int waveSize = 64;
     const int groupSize = waveSize / numGroups;
-    Value lane = getThreadId();
+    Value lane = getThreadId(rewriter, loc);
+    auto b = TritonLLVMOpBuilder(loc, rewriter);
     // Multiply by 4 because permute requires offset in bytes
-    Value laneOffset = mul(urem(lane, i32_val(groupSize)), i32_val(4));
-    Value permuteAddr = add(laneOffset, i32_val(groupId * groupSize * 4));
+    Value laneOffset = b.mul(b.urem(lane, b.i32_val(groupSize)), b.i32_val(4));
+    Value permuteAddr = b.add(laneOffset, b.i32_val(groupId * groupSize * 4));
     Type valType = val.getType();
     Value broadcasted;
     if (valType.isInteger(32)) {
@@ -91,10 +92,10 @@ struct DotOpMFMAConversionHelper {
     }
 
     if (valType.isF32()) {
-      val = bitcast(val, i32_ty);
+      val = b.bitcast(val, i32_ty);
       broadcasted = rewriter.create<ROCDL::DsBpermuteOp>(loc, val.getType(),
                                                          permuteAddr, val);
-      broadcasted = bitcast(broadcasted, f32_ty);
+      broadcasted = b.bitcast(broadcasted, f32_ty);
     }
     if (auto vecTy = mlir::dyn_cast<VectorType>(valType)) {
       auto vecBitSize = vecTy.getElementType().getIntOrFloatBitWidth() *
@@ -102,16 +103,16 @@ struct DotOpMFMAConversionHelper {
       const int int32VecSize = vecBitSize / 32;
 
       Type int32VecTy = vec_ty(i32_ty, int32VecSize);
-      Value int32Val = bitcast(val, int32VecTy);
-      Value int32Broadcasted = undef(int32VecTy);
+      Value int32Val = b.bitcast(val, int32VecTy);
+      Value int32Broadcasted = b.undef(int32VecTy);
       for (int i = 0; i < int32VecSize; ++i) {
-        Value int32Chunk = extract_element(i32_ty, int32Val, i32_val(i));
+        Value int32Chunk = b.extract_element(i32_ty, int32Val, b.i32_val(i));
         Value broadcastedChunk = rewriter.create<ROCDL::DsBpermuteOp>(
             loc, i32_ty, permuteAddr, int32Chunk);
-        int32Broadcasted = insert_element(int32VecTy, int32Broadcasted,
-                                          broadcastedChunk, i32_val(i));
+        int32Broadcasted = b.insert_element(int32VecTy, int32Broadcasted,
+                                          broadcastedChunk, b.i32_val(i));
       }
-      broadcasted = bitcast(int32Broadcasted, valType);
+      broadcasted = b.bitcast(int32Broadcasted, valType);
     }
     assert(broadcasted);
     return broadcasted;
@@ -128,9 +129,9 @@ struct DotOpMFMAConversionHelper {
     auto resType = valC.getType();
     Value zeroFlag = b.i32_val(0);
 
-    Value cbszFlag = cbsz != 0 ? i32_val(cbsz) : zeroFlag;
-    Value abidFlag = abid != 0 ? i32_val(abid) : zeroFlag;
-    Value blgpFlag = blgp != 0 ? i32_val(blgp) : zeroFlag;
+    Value cbszFlag = cbsz != 0 ? b.i32_val(cbsz) : zeroFlag;
+    Value abidFlag = abid != 0 ? b.i32_val(abid) : zeroFlag;
+    Value blgpFlag = blgp != 0 ? b.i32_val(blgp) : zeroFlag;
 
     OperationState loweredOp(loc, intrinsicName);
     loweredOp.addTypes(resType);
@@ -335,7 +336,7 @@ struct DotOpMFMAConversionHelper {
     rewriter.replaceOp(op, res);
   }
 
-  std::pair<unsigned, unsigned> getKBaseAB(unsigned mDim, unsigned nDim, unsigned kBase) {
+  std::pair<unsigned, unsigned> getKBaseAB(unsigned mDim, unsigned nDim, unsigned kBase) const {
     if (mDim == nDim) {
       return {kBase, kBase};
     }
@@ -447,7 +448,7 @@ struct DotOpMFMAConversionHelper {
           acc = zeroAuxiliarBlocks(subBlocks, acc);
           for (int k = 0; k < numRepK; k++) {
             for (int kPack = 0; kPack < kWidth / kBaseA; ++kPack) {
-              acc = generateMFMATile(mfmaInsnName, operandA[kPack][{b, m, k}],
+              acc = generateMFMATile(intrinsicName, operandA[kPack][{b, m, k}],
                 operandB[kPack][{b, n, k}], acc, mDim,
                 nDim, mfmaLayout.getIsTransposed());
               // acc = mfmaLayout.getIsTransposed()
@@ -478,7 +479,7 @@ struct DotOpMFMAConversionHelper {
       setPrioOp->moveAfter(firstMfma.getDefiningOp());
 
     const size_t mmaCount =
-        numRepB * numRepM * numRepN * numRepK * kWidth / kBase;
+        numRepB * numRepM * numRepN * numRepK * kWidth / kBaseB;
     packAndReplaceResult(op, fc, maybeMfmaIntrinsic, dstElemTy, elemTyA,
                          mmaCount);
 

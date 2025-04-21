@@ -20,8 +20,8 @@ struct MfmaIntrinsic {
                                             bool withScale, bool useTF32);
 
   MfmaIntrinsic(StringRef symbol, unsigned m, unsigned n, unsigned k,
-                unsigned kBaseA, unsigned kBaseB, Type aET, Type bET)
-      : name(symbol), mDim(m), nDim(n), kDim(k), kBase(kBase), aElementType(aET),
+                unsigned kB, Type aET, Type bET)
+      : name(symbol), mDim(m), nDim(n), kDim(k), kBase(kB), aElementType(aET),
         bElementType(bET) {}
   MfmaIntrinsic(const MfmaIntrinsic &other) = default;
   MfmaIntrinsic(MfmaIntrinsic &&other) = default;
