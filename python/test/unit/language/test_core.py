@@ -1685,8 +1685,8 @@ def test_tensor_atomic_add_non_exclusive_offset(size, num_ctas, dtype_x_str, dev
     kernel[(1, )](x, val, size, num_warps=1, num_ctas=num_ctas)
     ref = val[0::2] + val[1::2]
 
-    if dtype_x_str != 'bfloat16' or not is_cuda():
-        torch.testing.assert_close(ref, x.reshape(math.prod(shape)))
+    # if dtype_x_str != 'bfloat16' or not is_cuda():
+    torch.testing.assert_close(ref, x.reshape(math.prod(shape)))
 
 
 @pytest.mark.interpreter
@@ -1737,8 +1737,8 @@ def test_tensor_atomic_add_access_patterns(shape, idx_order, mask_step, num_ctas
             cnt += 1
 
     kernel[(1, )](val, idx, dst, shape0, shape1, mask_step, 64, num_ctas=num_ctas)
-    if not dtype_x_str == "bfloat16":
-        np.testing.assert_allclose(to_numpy(dst_ref), to_numpy(dst), atol=1e-2)
+    # if not dtype_x_str == "bfloat16":
+    np.testing.assert_allclose(to_numpy(dst_ref), to_numpy(dst), atol=1e-2)
 
 
 @pytest.mark.interpreter
