@@ -38,7 +38,7 @@ using ::mlir::triton::gpu::AMDMfmaEncodingAttr;
 using ::mlir::triton::gpu::DotOperandEncodingAttr;
 using ::mlir::triton::gpu::LinearEncodingAttr;
 
-using ValueTable = std::map<std::array<int, 3>, Value>;
+using ValueTable = std::map<std::array<int, 3>, SmallVector<Value>>;
 
 /// Get matrix format flag passed through BLGP/CBSZ args in V_MFMA_*_F8F6F4
 /// instructions.
@@ -489,57 +489,68 @@ struct DotOpMFMAConversionHelper {
   /// Extract vector from rawElems based on kWidth and kBase
   /// rawElems is a vector of kWidth elements. We need to prepare vector(s) of
   /// kBase elements for each mfma instruction
-  SmallVector<Value> extractOperands(Value rawElems, int kWidth, int kBase,
+  SmallVector<SmallVector<Value>> extractOperands(Value rawElems, int kWidth, int kBase,
                                      Type type, bool preserveBF16,
                                      bool isConstantScale = false) const {
     auto b = TritonLLVMOpBuilder(loc, rewriter);
     int kpack = kWidth / kBase;
-    SmallVector<Value> results;
+
+    bool wideOperand = kWidth > 32;
+    int numIntrinsics = wideOperand ? 16 : 1;
+    auto rawTy = mlir::cast<VectorType>(rawElems.getType());
+    int intrinsicK = kBase / numIntrinsics;
+
+    SmallVector<SmallVector<Value>> results;
     auto vecTy = vec_ty(type, kBase);
     if (type.isBF16() && !preserveBF16)
       vecTy = vec_ty(i16_ty, kBase);
     for (int k = 0; k < kpack; ++k) {
+      SmallVector<Value> resPack;
       Value vec = b.undef(vecTy);
-      for (int elemId = 0; elemId < kBase; ++elemId) {
-        auto val =
-            b.extract_element(type, rawElems, b.i32_val(elemId + k * kBase));
-        if (type.isBF16() && !preserveBF16) {
-          // rocdl.mfma.f32.32x32x8bf16.1k calls for input of i16 type
-          auto cast = b.bitcast(val, i16_ty);
-          vec = b.insert_element(vecTy, vec, cast, b.i32_val(elemId));
-        } else {
-          vec = b.insert_element(vecTy, vec, val, b.i32_val(elemId));
-        }
-      }
-      if (type.getIntOrFloatBitWidth() == 8) {
-        if (1 == kBase) {
-          // This is only for the scale operands of scaled mfma on CDNA4
-          if (isConstantScale) {
-            // If the scale is constant(created by arith::ConstantOp), it will
-            // be put in a sgpr instead of vgpr. In that case, instead of
-            // vgpr[7:0], the instruction reads sgpr[30:23] as the scale value.
-            // So we need to manually left shift the scale by 23 bits to meet
-            // the requirement.
-            results.push_back(b.shl(
-                i32_ty, b.zext(i32_ty, b.bitcast(vec, i8_ty)), b.i32_val(23)));
+      for (int intrinsic = 0; intrinsic < numIntrinsics; ++intrinsic) {
+        for (int elemId = 0; elemId < kBase; ++elemId) {
+          auto val =
+              b.extract_element(type, rawElems, b.i32_val(elemId + k * kBase));
+          if (type.isBF16() && !preserveBF16) {
+            // rocdl.mfma.f32.32x32x8bf16.1k calls for input of i16 type
+            auto cast = b.bitcast(val, i16_ty);
+            vec = b.insert_element(vecTy, vec, cast, b.i32_val(elemId));
           } else {
-            results.push_back(b.zext(i32_ty, b.bitcast(vec, i8_ty)));
+            vec = b.insert_element(vecTy, vec, val, b.i32_val(elemId));
           }
         }
-        if (4 == kBase)
-          // This is for int8 on pre- CDNA3 GPUs
-          results.push_back(b.bitcast(vec, i32_ty));
-        if (8 == kBase)
-          results.push_back(b.bitcast(vec, i64_ty));
-        if (16 == kBase)
-          // This is only for the operands of scaled mfma on CDNA4
-          results.push_back(b.bitcast(vec, vec_ty(i32_ty, 4)));
-        if (32 == kBase)
-          results.push_back(b.bitcast(vec, vec_ty(i32_ty, 8)));
-      } else {
-        results.push_back(vec);
+        if (type.getIntOrFloatBitWidth() == 8) {
+          if (1 == kBase) {
+            // This is only for the scale operands of scaled mfma on CDNA4
+            if (isConstantScale) {
+              // If the scale is constant(created by arith::ConstantOp), it will
+              // be put in a sgpr instead of vgpr. In that case, instead of
+              // vgpr[7:0], the instruction reads sgpr[30:23] as the scale value.
+              // So we need to manually left shift the scale by 23 bits to meet
+              // the requirement.
+              resPack.push_back(b.shl(
+                  i32_ty, b.zext(i32_ty, b.bitcast(vec, i8_ty)), b.i32_val(23)));
+            } else {
+              resPack.push_back(b.zext(i32_ty, b.bitcast(vec, i8_ty)));
+            }
+          }
+          if (4 == kBase)
+            // This is for int8 on pre- CDNA3 GPUs
+            resPack.push_back(b.bitcast(vec, i32_ty));
+          if (8 == kBase)
+          resPack.push_back(b.bitcast(vec, i64_ty));
+          if (16 == kBase)
+            // This is only for the operands of scaled mfma on CDNA4
+            resPack.push_back(b.bitcast(vec, vec_ty(i32_ty, 4)));
+          if (32 == kBase)
+            resPack.push_back(b.bitcast(vec, vec_ty(i32_ty, 8)));
+        } else {
+          resPack.push_back(vec);
+        }
       }
+      results.push_back(resPack);
     }
+
     return results;
   }
 
@@ -569,9 +580,9 @@ struct DotOpMFMAConversionHelper {
           if (type.isF32() && !allowXF32) {
             for (int k = 0; k < kpack; ++k)
               dotOpVals[k][{b, i, j}] =
-                  tb.extract_element(type, rawElems, tb.i32_val(k));
+                  {tb.extract_element(type, rawElems, tb.i32_val(k))};
           } else {
-            SmallVector<Value> vals;
+            SmallVector<SmallVector<Value>> vals;
             if (type.isF32() && allowXF32) {
               vals = extractOperands(rawElems, kWidth, kBase, f32_ty,
                                      preserveBF16);
@@ -606,7 +617,7 @@ struct ScaledDotOpMFMAConversionHelper : DotOpMFMAConversionHelper {
                                   Location loc)
       : DotOpMFMAConversionHelper(mfmaLayout, rewriter, typeConverter, loc) {}
 
-  Value generateScaledMFMAOp(StringRef intrinsicName, Value valA, Value valB,
+  Value generateScaledMFMAOp(StringRef intrinsicName, SmallVector<Value> valA, SmallVector<Value> valB,
                              Value valC, Type elemTypeA, Type elemTypeB) const {
     auto b = TritonLLVMOpBuilder(loc, rewriter);
     auto resType = valC.getType();
@@ -618,13 +629,13 @@ struct ScaledDotOpMFMAConversionHelper : DotOpMFMAConversionHelper {
     loweredOp.addTypes(resType);
     // If both scales are constant 0, the LLVM backend will use V_MFMA_*_F8F6F4
     // instructions instead of V_MFMA_SCALE_*_F8F6F4 to reduce memory access.
-    loweredOp.addOperands({valA, valB, valC, b.i32_val(cbsz), b.i32_val(blgp),
+    loweredOp.addOperands({valA[0], valB[0], valC, b.i32_val(cbsz), b.i32_val(blgp),
                            zeroFlag, zeroFlag, zeroFlag, zeroFlag});
     return rewriter.create(loweredOp)->getResult(0);
   }
 
-  Value generateScaledMFMAOp(StringRef intrinsicName, Value valA, Value valB,
-                             Value valC, Value valScaleA, Value valScaleB,
+  Value generateScaledMFMAOp(StringRef intrinsicName, SmallVector<Value> valA, SmallVector<Value> valB,
+                             Value valC, SmallVector<Value> valScaleA, SmallVector<Value> valScaleB,
                              Type elemTypeA, Type elemTypeB) const {
     auto b = TritonLLVMOpBuilder(loc, rewriter);
     auto resType = valC.getType();
@@ -634,8 +645,8 @@ struct ScaledDotOpMFMAConversionHelper : DotOpMFMAConversionHelper {
     int32_t blgp = getMfmaF8F6F4MatrixFormat(elemTypeB);
     assert((cbsz != -1) && (blgp != -1));
     loweredOp.addTypes(resType);
-    loweredOp.addOperands({valA, valB, valC, b.i32_val(cbsz), b.i32_val(blgp),
-                           zeroFlag, valScaleA, zeroFlag, valScaleB});
+    loweredOp.addOperands({valA[0], valB[0], valC, b.i32_val(cbsz), b.i32_val(blgp),
+                           zeroFlag, valScaleA[0], zeroFlag, valScaleB[0]});
     return rewriter.create(loweredOp)->getResult(0);
   }
 
