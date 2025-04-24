@@ -418,6 +418,21 @@ class BlockedToMFMA : public OpRewritePattern<tt::DotOp> {
   int nonKDim;
   int kPack;
 
+  std::pair<unsigned, unsigned> getKBaseAB(unsigned mDim, unsigned nDim, unsigned kBase) const {
+    if (mDim == nDim) {
+      return {kBase, kBase};
+    }
+
+    if (mDim == 64 && nDim == 4) {
+      return {64, 4};
+    } else if (mDim == 4 && nDim == 64) {
+      assert (kBase == 4);
+      return {4, 64};
+    } else {
+      llvm::report_fatal_error("No match found in compute kBase\n");      
+    }
+  }
+
 public:
   BlockedToMFMA(MLIRContext *context, int mfmaVersion, int nonKDim, int kPack,
                 PatternBenefit benefit = 1)
@@ -473,6 +488,7 @@ public:
     auto nDim = mfmaInstr->nDim;
     auto kDim = mfmaInstr->kDim;
     auto kBase = mfmaInstr->kBase;
+    auto [kBaseA, kBaseB] = getKBaseAB(mDim, nDim, kBase);
 
     auto warpsPerTile =
         warpsPerTileMFMA(dotOp, retShape, numWarps, {mDim, nDim});
@@ -526,19 +542,23 @@ public:
     //        can only consume kBase elements from each thread.
     //    Note that we cannot have larger kPack since kPack = 2 means
     //    ds_read_b128, which is the largest vector size for shared memory load.
-    auto kWidth = kBase;
+    auto kWidthA = kBaseA;
+    auto kWidthB = kBaseB;
     // in mfma 4x4 case argument matrix groups in 16 groups
-    if (mDim == 4 && nDim == 4)
-      kWidth = kDim / 16;
-    if ((mDim == 4 && nDim == 64) || (mDim == 64 && nDim == 4))
-      kWidth = kDim;
+    // if (mDim == 4 && nDim == 4)
+    //   kWidth = kDim / 16;
+    // if ((mDim == 4 && nDim == 64) || (mDim == 64 && nDim == 4))
+    //   kWidth = kDim;
 
+    llvm::outs() << "calculate_kWidthA = " << kWidthA << ", kWidthB = " << kWidthB << "\n";
     // We want to extend kWidth by kPack (kPack=1 means no extension)
     // to increase ds_read vector size
     // However, in FA, the second dot can only use kWidth = kBase since it's
     // limited by the result of the first dot, which is of mfmaLayout.
-    if (!isChainDotTail(dotOp))
-      kWidth *= kPack;
+    if (!isChainDotTail(dotOp)) {
+      kWidthA *= kPack;
+      kWidthB *= kPack;
+    }
 
     Value newDot;
     if (withScale) {
@@ -549,11 +569,11 @@ public:
       if (failed(aScaledElemTy) || failed(bScaledElemTy))
         return failure();
 
-      assert(kWidth == 32);
+      // assert(kWidth == 32);
       auto newAEncoding =
-          DotOperandEncodingAttr::get(ctx, 0, mfmaEnc, kWidth / 2);
+          DotOperandEncodingAttr::get(ctx, 0, mfmaEnc, kWidthA / 2);
       auto newBEncoding =
-          DotOperandEncodingAttr::get(ctx, 1, mfmaEnc, kWidth / 2);
+          DotOperandEncodingAttr::get(ctx, 1, mfmaEnc, kWidthB / 2);
 
       a = convertAndCastTensor(rewriter, a, newAEncoding,
                                mfmaInstr->aElementType);
@@ -564,9 +584,9 @@ public:
           aScaledElemTy.value(), bScaledElemTy.value(), /*fastMath=*/false);
     } else {
       auto newAEncoding =
-          ttg::DotOperandEncodingAttr::get(ctx, 0, mfmaEnc, kWidth);
+          ttg::DotOperandEncodingAttr::get(ctx, 0, mfmaEnc, kWidthA);
       auto newBEncoding =
-          ttg::DotOperandEncodingAttr::get(ctx, 1, mfmaEnc, kWidth);
+          ttg::DotOperandEncodingAttr::get(ctx, 1, mfmaEnc, kWidthB);
       a = convertAndCastTensor(rewriter, a, newAEncoding,
                                mfmaInstr->aElementType);
       b = convertAndCastTensor(rewriter, b, newBEncoding,

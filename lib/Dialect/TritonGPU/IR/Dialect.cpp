@@ -1704,11 +1704,10 @@ AMDMfmaEncodingAttr::getInstrShapeForOperand(int kWidth, int opIdx) const {
   assert((mDim == nDim) && (mDim == 32 || mDim == 16 || mDim == 4) ||
          (mDim == 64 && nDim == 4) || (mDim == 4 && nDim == 64));
   constexpr int warpSize = 64; // MFMA is always based on the 64-wide warps.
-  int kGroups = -1;
-  if (mDim == nDim)
-    kGroups = warpSize / mDim;
-  if (mDim == 64 && nDim == 4 || mDim == 4 && nDim == 64)
-    kGroups = 1;
+  auto nonKDim = opIdx == 0 ? mDim : nDim;
+  int kGroups = warpSize / nonKDim;
+  // if (mDim == 64 && nDim == 4 || mDim == 4 && nDim == 64)
+  //   kGroups = 1;
   int64_t kDim = kWidth * kGroups;
   if (opIdx == 0)
     return {mDim, kDim};
@@ -1730,6 +1729,7 @@ SmallVector<int64_t>
 AMDMfmaEncodingAttr::getRepForOperand(ArrayRef<int64_t> operandShape,
                                       int kWidth, int opIdx) const {
   auto operandTileShape = getInstrShapeForOperand(kWidth, opIdx);
+  llvm::outs() << "opIdx = " << opIdx << ", operandTileShape = {" << operandTileShape[0] << ", " << operandTileShape[1] << "}, kWidth = " << kWidth << "\n";
   auto rank = operandShape.size();
   auto warpsPerCTA = getWarpsPerCTA();
   int numRepBatch =

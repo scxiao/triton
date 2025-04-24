@@ -399,6 +399,12 @@ struct DotOpMFMAConversionHelper {
 
     const auto kDimInstrSize = mfmaLayout.getInstrShapeForOperand(kWidth, 0)[1];
 
+    llvm::outs() << "kWidth = " << kWidth << "\n";
+    auto ashape = aTensorTy.getShape();
+    llvm::outs() << "a_shape = {" << ashape[0] << ", " << ashape[1] << "}\n";
+    auto bshape = bTensorTy.getShape();
+    llvm::outs() << "b_shape = {" << bshape[0] << ", " << bshape[1] << "}\n";
+
     auto repA = mfmaLayout.getRepForOperand(aTensorTy.getShape(), kWidth, 0);
     auto repB = mfmaLayout.getRepForOperand(bTensorTy.getShape(), kWidth, 1);
 
@@ -562,11 +568,14 @@ struct DotOpMFMAConversionHelper {
     auto tb = TritonLLVMOpBuilder(loc, rewriter);
     auto elems = unpackLLElements(loc, value, rewriter);
     int kpack = kWidth / kBase;
+    llvm::outs() << "kPack = " << kpack << ", kWidth = " << kWidth << ", kBase = " << kBase << "\n";
+    llvm::outs() << "batch = " << batch << ", n0 = " << n0 << ", n1 = " << n1 << "\n";
     SmallVector<ValueTable> dotOpVals(kpack);
     for (int b = 0; b < batch; ++b) {
       for (int i = 0; i < n0; i++) {
         for (int j = 0; j < n1; j++) {
           Type elemTy = typeConverter->convertType(type);
+          llvm::outs() << "loc1, elemTy = " << elemTy << ", kWidth = " << kWidth << "\n";
           Type ty = vec_ty(elemTy, kWidth);
           Value rawElems = tb.undef(ty);
           for (int k = 0; k < kWidth; ++k) {
@@ -716,7 +725,6 @@ struct ScaledDotOpMFMAConversionHelper : DotOpMFMAConversionHelper {
     int bKWidth = bKBase;
 
     const auto kDimInstrSize = mfmaLayout.getInstrShapeForOperand(aKBase, 0)[1];
-
     auto repA = mfmaLayout.getRepForOperand(aTensorTy.getShape(), aKWidth, 0);
     auto repB = mfmaLayout.getRepForOperand(bTensorTy.getShape(), bKWidth, 1);
     assert(repA[2] == repB[1]);
