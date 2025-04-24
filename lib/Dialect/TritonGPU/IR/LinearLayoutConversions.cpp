@@ -715,22 +715,22 @@ LinearLayout mfmaDotToLinearLayout(DotOperandEncodingAttr dotMfmaLayout,
     kTileSize = kWidth * 4;
   } else if (mfmaLayout.getMDim() == 4 && mfmaLayout.getNDim() == 64) {
     if (opIdx == 0) {
-      laneBase = {{1, 0}, {2, 0}, {0, 4}, {0, 8}, {0, 16}, {0, 32}};
+      laneBase = {{0, 1}, {0, 2}, {4, 0}, {8, 0}, {16, 0}, {32, 0}};
     } else {
       assert(opIdx == 1);
-      laneBase = {{0, 1}, {0, 2}, {0, 4}, {0, 8}, {0, 16}, {0, 32}};
+      laneBase = {{1, 0}, {2, 0}, {4, 0}, {8, 0}, {16, 0}, {32, 0}};
     }
     kTileSize = 64;
   } else if (mfmaLayout.getMDim() == 64 && mfmaLayout.getNDim() == 4) {
     if (opIdx == 0) {
-      laneBase = {{1, 0}, {2, 0}, {4, 0}, {8, 0}, {16, 0}, {32, 0}};
+      laneBase = {{0, 1}, {0, 2}, {0, 4}, {0, 8}, {0, 16}, {0, 32}};
     } else {
       assert(opIdx == 1);
-      laneBase = {{0, 1}, {0, 2}, {4, 0}, {8, 0}, {16, 0}, {32, 0}};
+      laneBase = {{1, 0}, {2, 0}, {0, 4}, {0, 8}, {0, 16}, {0, 32}};
     }
     kTileSize = 64;
   } else if (mfmaLayout.getMDim() == 4 && mfmaLayout.getNDim() == 4) {
-    laneBase = {{1, 0}, {2, 0}, {0, 4}, {0, 8}, {0, 16}, {0, 32}};
+    laneBase = {{0, 1}, {0, 2}, {4, 0}, {8, 0}, {16, 0}, {32, 0}};
     kTileSize = 64;
   } else {
     assert(false && "shape not supported");
