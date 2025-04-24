@@ -1377,7 +1377,11 @@ AMDMfmaEncodingAttr::verify(function_ref<mlir::InFlightDiagnostic()> emitError,
   if (versionMinor != 0) {
     return emitError() << "minor version must be 0";
   }
-  if (!((mDim == 32 && nDim == 32) || (mDim == 16 && nDim == 16))) {
+  if (!((mDim == 32 && nDim == 32) || 
+        (mDim == 16 && nDim == 16) || 
+        (mDim == 4 && nDim == 64) || 
+        (mDim == 64 && nDim == 4) || 
+        (mDim == 4 && nDim == 4))) {
     return emitError()
            << "(M, N) cases other than (32, 32) or (16, 16) unimplemented";
   }

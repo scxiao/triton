@@ -661,12 +661,15 @@ LinearLayout mfmaDotToLinearLayout(DotOperandEncodingAttr dotMfmaLayout,
   int mIndex = 0 + hasBatchDim;
 
   int32_t kWidth = dotMfmaLayout.getKWidth();
-  auto kDim = dotMfmaLayout.getOpIdx() == 0 ? rank - 1 : rank - 2;
+  unsigned opIdx = dotMfmaLayout.getOpIdx() == 0;
+  auto kDim = opIdx ? rank - 1 : rank - 2;
   int32_t kSize = shape[kDim];
   auto warpsPerCTA = mfmaLayout.getWarpsPerCTA();
 
   MLIRContext *ctx = dotMfmaLayout.getContext();
   SmallVector<StringAttr> outDimNames = standardOutDimNames(ctx, rank);
+
+  llvm::outs() << "mDim = " << mfmaLayout.getMDim() << ", nDim = " << mfmaLayout.getNDim() << ", kWidth = " << kWidth << ", kSize " << kSize << "\n";
 
   StringAttr kRegister = S("register");
   StringAttr kLane = S("lane");
@@ -703,14 +706,34 @@ LinearLayout mfmaDotToLinearLayout(DotOperandEncodingAttr dotMfmaLayout,
     // kWidth in K dimension.
     laneBase = {{0, 1}, {0, 2}, {0, 4}, {0, 8}, {0, 16}, {kWidth, 0}};
     kTileSize = kWidth * 2;
-  } else {
-    assert(mfmaLayout.getMDim() == 16);
+  } else if (mfmaLayout.getMDim() == 16) {
     // For lane dim, since the MFMA thread arrangement is {K, N} = {4, 16}, this
     // means that mapping of first 4 base (up to thread 16) vectors will be an
     // identity along N dim. Thread 16 will be mapped to element kWisth in K
     // dimension. Thread 32 is mapped to element 2*kWidth in K dim.
     laneBase = {{0, 1}, {0, 2}, {0, 4}, {0, 8}, {kWidth, 0}, {kWidth * 2, 0}};
     kTileSize = kWidth * 4;
+  } else if (mfmaLayout.getMDim() == 4 && mfmaLayout.getNDim() == 64) {
+    if (opIdx == 0) {
+      laneBase = {{1, 0}, {2, 0}, {0, 4}, {0, 8}, {0, 16}, {0, 32}};
+    } else {
+      assert(opIdx == 1);
+      laneBase = {{0, 1}, {0, 2}, {0, 4}, {0, 8}, {0, 16}, {0, 32}};
+    }
+    kTileSize = 64;
+  } else if (mfmaLayout.getMDim() == 64 && mfmaLayout.getNDim() == 4) {
+    if (opIdx == 0) {
+      laneBase = {{1, 0}, {2, 0}, {4, 0}, {8, 0}, {16, 0}, {32, 0}};
+    } else {
+      assert(opIdx == 1);
+      laneBase = {{0, 1}, {0, 2}, {4, 0}, {8, 0}, {16, 0}, {32, 0}};
+    }
+    kTileSize = 64;
+  } else if (mfmaLayout.getMDim() == 4 && mfmaLayout.getNDim() == 4) {
+    laneBase = {{1, 0}, {2, 0}, {0, 4}, {0, 8}, {0, 16}, {0, 32}};
+    kTileSize = 64;
+  } else {
+    assert(false && "shape not supported");
   }
   assert(kTileSize != -1);
   // Add repeats of registers along K dimension to register base vectors
