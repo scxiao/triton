@@ -389,24 +389,27 @@ struct DotOpMFMAConversionHelper {
 
     auto aEncoding = cast<DotOperandEncodingAttr>(aTensorTy.getEncoding());
     auto bEncoding = cast<DotOperandEncodingAttr>(bTensorTy.getEncoding());
-    int kWidth = aEncoding.getKWidth();
+    int kWidthA = aEncoding.getKWidth();
+    int kWidthB = bEncoding.getKWidth();
     // may need to change if kWidth of a and b are different
-    assert(kWidth == bEncoding.getKWidth());
+    // assert(kWidth == bEncoding.getKWidth());
 
     // If we are using XF32, the kWidth (and kBase) is double that of F32.
-    if (aTensorTy.getElementType().isF32() && allowXF32)
-      kWidth *= 2;
+    if (aTensorTy.getElementType().isF32() && allowXF32) {
+      kWidthA *= 2;
+      kWidthB *= 2;
+    }
 
-    const auto kDimInstrSize = mfmaLayout.getInstrShapeForOperand(kWidth, 0)[1];
+    const auto kDimInstrSize = mfmaLayout.getInstrShapeForOperand(kWidthA, 0)[1];
 
-    llvm::outs() << "kWidth = " << kWidth << "\n";
+    llvm::outs() << "kWidth = " << kWidthA << "\n";
     auto ashape = aTensorTy.getShape();
     llvm::outs() << "a_shape = {" << ashape[0] << ", " << ashape[1] << "}\n";
     auto bshape = bTensorTy.getShape();
     llvm::outs() << "b_shape = {" << bshape[0] << ", " << bshape[1] << "}\n";
 
-    auto repA = mfmaLayout.getRepForOperand(aTensorTy.getShape(), kWidth, 0);
-    auto repB = mfmaLayout.getRepForOperand(bTensorTy.getShape(), kWidth, 1);
+    auto repA = mfmaLayout.getRepForOperand(aTensorTy.getShape(), kWidthA, 0);
+    auto repB = mfmaLayout.getRepForOperand(bTensorTy.getShape(), kWidthB, 1);
 
     assert(repA[2] == repB[1]);
 
@@ -422,10 +425,10 @@ struct DotOpMFMAConversionHelper {
 
     bool preserveBF16 = intrinsicName.contains(".bf16") && mfmaVersion >= 4;
     auto operandA = getValuesFromDotOperandLayoutStruct(
-        loadedA, numRepB, numRepM, numRepK, kWidth, kBaseA,
+        loadedA, numRepB, numRepM, numRepK, kWidthA, kBaseA,
         aTensorTy.getElementType(), allowXF32, preserveBF16);
     auto operandB = getValuesFromDotOperandLayoutStruct(
-        loadedB, numRepB, numRepN, numRepK, kWidth, kBaseB,
+        loadedB, numRepB, numRepN, numRepK, kWidthB, kBaseB,
         aTensorTy.getElementType(), allowXF32, preserveBF16);
 
     auto dstElemTy = dTensorTy.getElementType();
@@ -453,7 +456,7 @@ struct DotOpMFMAConversionHelper {
           }
           acc = zeroAuxiliarBlocks(subBlocks, acc);
           for (int k = 0; k < numRepK; k++) {
-            for (int kPack = 0; kPack < kWidth / kBaseA; ++kPack) {
+            for (int kPack = 0; kPack < kWidthA / kBaseA; ++kPack) {
               acc = generateMFMATile(intrinsicName, operandA[kPack][{b, m, k}],
                 operandB[kPack][{b, n, k}], acc, mDim,
                 nDim, mfmaLayout.getIsTransposed());
@@ -485,7 +488,7 @@ struct DotOpMFMAConversionHelper {
       setPrioOp->moveAfter(firstMfma.getDefiningOp());
 
     const size_t mmaCount =
-        numRepB * numRepM * numRepN * numRepK * kWidth / kBaseB;
+        numRepB * numRepM * numRepN * numRepK * kWidthB / kBaseB;
     packAndReplaceResult(op, fc, maybeMfmaIntrinsic, dstElemTy, elemTyA,
                          mmaCount);
 
