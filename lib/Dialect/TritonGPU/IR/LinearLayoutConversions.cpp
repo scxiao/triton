@@ -690,6 +690,8 @@ LinearLayout mfmaDotToLinearLayout(DotOperandEncodingAttr dotMfmaLayout,
   // Lane holds kWidth consecutive elements along k dimension, so
   // base register vectors for one tile are initialized in following way:
   // {1, 0}, {2, 0} ... {kWidth/2, 0}
+  llvm::outs() << "LinearLayoutConversion, kWidth = " << kWidth << "\n";
+  llvm::outs() << "opIdx = " << opIdx << ", shape = {" << shape[0] << ", " << shape[1] << "}\n";
   std::vector<std::vector<int32_t>> registerBase;
   for (int32_t elem = 1; elem < kWidth; elem *= 2)
     registerBase.emplace_back(std::vector<int32_t>{elem, 0});
@@ -714,22 +716,28 @@ LinearLayout mfmaDotToLinearLayout(DotOperandEncodingAttr dotMfmaLayout,
     laneBase = {{0, 1}, {0, 2}, {0, 4}, {0, 8}, {kWidth, 0}, {kWidth * 2, 0}};
     kTileSize = kWidth * 4;
   } else if (mfmaLayout.getMDim() == 4 && mfmaLayout.getNDim() == 64) {
-    if (opIdx == 0) {
+    llvm::outs() << "layout1\n";
+    if (opIdx == 1) {
       laneBase = {{0, 1}, {0, 2}, {4, 0}, {8, 0}, {16, 0}, {32, 0}};
+      kTileSize = 64;
     } else {
-      assert(opIdx == 1);
-      laneBase = {{1, 0}, {2, 0}, {4, 0}, {8, 0}, {16, 0}, {32, 0}};
-    }
-    kTileSize = 64;
-  } else if (mfmaLayout.getMDim() == 64 && mfmaLayout.getNDim() == 4) {
-    if (opIdx == 0) {
+      assert(opIdx == 0);
+      // laneBase = {{1, 0}, {2, 0}, {4, 0}, {8, 0}, {16, 0}, {32, 0}};
       laneBase = {{0, 1}, {0, 2}, {0, 4}, {0, 8}, {0, 16}, {0, 32}};
-    } else {
-      assert(opIdx == 1);
-      laneBase = {{1, 0}, {2, 0}, {0, 4}, {0, 8}, {0, 16}, {0, 32}};
+      kTileSize = 64;
     }
-    kTileSize = 64;
+  } else if (mfmaLayout.getMDim() == 64 && mfmaLayout.getNDim() == 4) {
+    llvm::outs() << "layout2\n";
+    if (opIdx == 1) {
+      laneBase = {{0, 1}, {0, 2}, {0, 4}, {0, 8}, {0, 16}, {0, 32}};
+      kTileSize = 4;
+    } else {
+      assert(opIdx == 0);
+      laneBase = {{1, 0}, {2, 0}, {0, 4}, {0, 8}, {0, 16}, {0, 32}};
+      kTileSize = 64;
+    }
   } else if (mfmaLayout.getMDim() == 4 && mfmaLayout.getNDim() == 4) {
+    llvm::outs() << "layout3\n";
     laneBase = {{0, 1}, {0, 2}, {4, 0}, {8, 0}, {16, 0}, {32, 0}};
     kTileSize = 64;
   } else {
@@ -755,10 +763,16 @@ LinearLayout mfmaDotToLinearLayout(DotOperandEncodingAttr dotMfmaLayout,
     tileLayout *= LinearLayout::identity1D(1, kLane, outDimNames[order[2]]);
   }
 
+  llvm::outs() << "tileLayout = " << tileLayout << "\n";
+
   LinearLayout warpLayout = identityStandardND(kWarp, warpsPerCTA, warpOrder);
 
   LinearLayout ctaLayout = tileLayout.transposeOuts(outDimNames) *
                            warpLayout.transposeOuts(outDimNames);
+
+  auto tmpOutput = combineCtaCgaWithShape(ctaLayout, mfmaLayout.getCTALayout(), shape);
+  llvm::outs() << "opIdx = " << opIdx << ", linearLayout = \n" << tmpOutput << "\n";
+  llvm::outs() << " --------------------------------------------------------\n";
 
   return combineCtaCgaWithShape(ctaLayout, mfmaLayout.getCTALayout(), shape);
 }
