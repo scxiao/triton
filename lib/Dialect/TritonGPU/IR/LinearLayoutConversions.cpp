@@ -719,13 +719,11 @@ LinearLayout mfmaDotToLinearLayout(DotOperandEncodingAttr dotMfmaLayout,
     llvm::outs() << "layout1\n";
     if (opIdx == 1) {
       laneBase = {{0, 1}, {0, 2}, {4, 0}, {8, 0}, {16, 0}, {32, 0}};
-      kTileSize = 64;
     } else {
       assert(opIdx == 0);
-      // laneBase = {{1, 0}, {2, 0}, {4, 0}, {8, 0}, {16, 0}, {32, 0}};
       laneBase = {{0, 1}, {0, 2}, {0, 4}, {0, 8}, {0, 16}, {0, 32}};
-      kTileSize = 64;
     }
+    kTileSize = 64;
   } else if (mfmaLayout.getMDim() == 64 && mfmaLayout.getNDim() == 4) {
     llvm::outs() << "layout2\n";
     if (opIdx == 1) {

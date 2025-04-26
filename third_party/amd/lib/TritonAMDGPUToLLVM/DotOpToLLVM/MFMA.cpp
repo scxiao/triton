@@ -424,10 +424,12 @@ struct DotOpMFMAConversionHelper {
     assert(repA[0] == repB[0]);
 
     bool preserveBF16 = intrinsicName.contains(".bf16") && mfmaVersion >= 4;
+    llvm::outs() << "operandA----------\n";
     auto operandA = getValuesFromDotOperandLayoutStruct(
         loadedA, numRepB, numRepM, numRepK, kWidthA, kBaseA,
         aTensorTy.getElementType(), allowXF32, preserveBF16);
-    auto operandB = getValuesFromDotOperandLayoutStruct(
+        llvm::outs() << "operandB----------\n";
+        auto operandB = getValuesFromDotOperandLayoutStruct(
         loadedB, numRepB, numRepN, numRepK, kWidthB, kBaseB,
         aTensorTy.getElementType(), allowXF32, preserveBF16);
 
@@ -508,16 +510,16 @@ struct DotOpMFMAConversionHelper {
     int numIntrinsics = wideOperand ? 16 : 1;
     auto rawTy = mlir::cast<VectorType>(rawElems.getType());
     int intrinsicK = kBase / numIntrinsics;
-
+    llvm::outs() << "intrinsicK = " << intrinsicK << "\n";
     SmallVector<SmallVector<Value>> results;
-    auto vecTy = vec_ty(type, kBase);
+    auto vecTy = vec_ty(type, intrinsicK);
     if (type.isBF16() && !preserveBF16)
-      vecTy = vec_ty(i16_ty, kBase);
+      vecTy = vec_ty(i16_ty, intrinsicK);
     for (int k = 0; k < kpack; ++k) {
       SmallVector<Value> resPack;
       Value vec = b.undef(vecTy);
       for (int intrinsic = 0; intrinsic < numIntrinsics; ++intrinsic) {
-        for (int elemId = 0; elemId < kBase; ++elemId) {
+        for (int elemId = 0; elemId < intrinsicK; ++elemId) {
           auto val =
               b.extract_element(type, rawElems, b.i32_val(elemId + k * kBase));
           if (type.isBF16() && !preserveBF16) {
@@ -547,16 +549,18 @@ struct DotOpMFMAConversionHelper {
             // This is for int8 on pre- CDNA3 GPUs
             resPack.push_back(b.bitcast(vec, i32_ty));
           if (8 == kBase)
-          resPack.push_back(b.bitcast(vec, i64_ty));
+            resPack.push_back(b.bitcast(vec, i64_ty));
           if (16 == kBase)
             // This is only for the operands of scaled mfma on CDNA4
             resPack.push_back(b.bitcast(vec, vec_ty(i32_ty, 4)));
           if (32 == kBase)
             resPack.push_back(b.bitcast(vec, vec_ty(i32_ty, 8)));
         } else {
+          llvm::outs() << "vec_size = " << vec << "\n";
           resPack.push_back(vec);
         }
       }
+      llvm::outs() << "resPack_size = " << resPack.size() << "\n";
       results.push_back(resPack);
     }
 
