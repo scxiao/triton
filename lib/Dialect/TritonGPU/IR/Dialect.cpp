@@ -1804,7 +1804,8 @@ SwizzledSharedEncodingAttr AMDMfmaEncodingAttr::composeSharedLayoutForOperand(
       maxPhase = 1;
     }
 
-    return SwizzledSharedEncodingAttr::get(getContext(), vectorSize, 
+    llvm::outs() << "--------------------Dialect_vecSize = " << vecSize << "\n";
+    return SwizzledSharedEncodingAttr::get(getContext(), vecSize, 
       perPhase, maxPhase, sharedOrder, ctaLayout);
   }
 
@@ -1815,7 +1816,6 @@ SwizzledSharedEncodingAttr AMDMfmaEncodingAttr::composeSharedLayoutForOperand(
   // TODO (zhanglx): figure out better parameters for mfma4
   if (getMDim() == 4)
     maxPhase = 4;
-
   return SwizzledSharedEncodingAttr::get(getContext(), vectorSize, perPhase,
                                          maxPhase, sharedOrder, ctaLayout);
 }

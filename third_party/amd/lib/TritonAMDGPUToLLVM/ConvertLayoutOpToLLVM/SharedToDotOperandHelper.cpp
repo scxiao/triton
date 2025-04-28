@@ -208,10 +208,15 @@ llvm::SmallVector<Value> computeOffsetsBType(
 
   int vectorSize = 1;
   if (order[0] == rank - 2) {
-    if (isSwizzled(srcLayout))
+    if (isSwizzled(srcLayout)) {
       vectorSize = std::min(static_cast<int>(srcLayout.getVec()), numOfElems);
-    else
+      llvm::outs() << "isSwizzed, srcLayout_getVec = " << srcLayout.getVec() << "\n";
+      llvm::outs() << "isSwizzed------------, vectorSize = " << vectorSize << "\n";
+    }
+    else {
+      llvm::outs() << "notSwizzed-----------, vectorSize = " << vectorSize << "\n";
       vectorSize = numOfElems;
+    }
   }
 
   auto mapping = fn(rewriter, loc, tElemsPerInstr, warpId, laneId, numOfElems,

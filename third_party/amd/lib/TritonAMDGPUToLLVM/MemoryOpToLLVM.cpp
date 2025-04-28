@@ -65,6 +65,9 @@ private:
     Value dst = op.getResult();
     auto llvmElemTy = typeConverter->convertType(
         cast<MemDescType>(src.getType()).getElementType());
+    llvm::outs() << "<<<<<<<<<<<<<<<<<<< ConvertLDSToDotOperand>>>>>>>>>>>>>>>>>>, opIdx = " << dotOperandLayout.getOpIdx() << "\n";
+    llvm::outs() << "src = " << src << ", dst = " << dst << "\n";
+    llvm::outs() << "llvm_src = " << adaptor.getSrc() << "\n";
 
     auto smemObj = LLVM::getSharedMemoryObjectFromStruct(loc, adaptor.getSrc(),
                                                          llvmElemTy, rewriter);
@@ -120,6 +123,7 @@ public:
     Attribute dstLayout = dstTy.getEncoding();
 
     if (canUseTransLoad(op, srcTy, dstTy)) {
+      llvm::outs() << "TRUE----, canUseTransLoad\n";
       assert(checkPerformanceProperties(srcTy, dstTy));
       return lowerSharedToDotOperandTransLL(op, adaptor, getTypeConverter(),
                                             rewriter);

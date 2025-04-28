@@ -77,6 +77,7 @@ llvm::SmallVector<llvm::SmallVector<Value>> computeTensorElemMappingInBlock(
   auto numM = reps[1];
   auto numK = reps[2];
   const int loadsPerThread = numOfElems / loadVecSize;
+  llvm::outs() << "numK = " << numK << ", loadsPerThreads = " << loadsPerThread << ", loadVecSize = " << loadVecSize << "\n";
   llvm::SmallVector<llvm::SmallVector<Value>> mapping(numK * loadsPerThread);
 
   Value _0 = b.i32_val(0);
@@ -239,6 +240,7 @@ Value convertLayout(int opIdx, ConversionPatternRewriter &rewriter,
   auto elemTy = aTensorTy.getElementType();
   auto kWidth = encoding.getKWidth();
   auto elemsPerInstr = mfmaLayout.getInstrShapeForOperand(kWidth, opIdx);
+  llvm::outs() << "elemsPerInstr = {" << elemsPerInstr[0] << ", " << elemsPerInstr[1] << "}\n";
 
   int64_t mfmaInstrNonK;
   int64_t mfmaInstrK;
@@ -259,6 +261,7 @@ Value convertLayout(int opIdx, ConversionPatternRewriter &rewriter,
   }
 
   auto numReps = mfmaLayout.getRepForOperand(shape, kWidth, opIdx);
+  llvm::outs() << "numReps = {" << numReps[0] << ", " << numReps[1] << ", " << numReps[2] << "}\n";
   auto numRepNonK = numReps[nonKDimIdx];
   auto numRepK = numReps[kDimIdx];
   auto repB = numReps[0];
@@ -286,6 +289,7 @@ Value convertLayout(int opIdx, ConversionPatternRewriter &rewriter,
   int numSubBlocks = 1;
   if ((mfmaInstrK == 4 || mfmaInstrK == 1) && mfmaInstrNonK == 4)
     numSubBlocks = 16;
+  llvm::outs() << "numSubBlocks = " << numSubBlocks << ", mfmaInstrNonK = " << mfmaInstrNonK << ", mfmaInstrK = " << mfmaInstrK << "\n";
   // numOfElemsPerThreadPerMfmaInstr
   int numOfElems = mfmaInstrNonK * mfmaInstrK * numSubBlocks / iWarpSize;
   assert(numOfElems >= 1);
