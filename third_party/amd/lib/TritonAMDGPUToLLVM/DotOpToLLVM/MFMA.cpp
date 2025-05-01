@@ -177,11 +177,13 @@ struct DotOpMFMAConversionHelper {
       acc = valC;
       for (int kRep = 0; kRep < numRepeats; ++kRep) {
         if (mDim == 4 and (not transpose)) {
+          llvm::outs() << "mDim=4, no tranpose\n";
           assert(valA.size() == 1 and valB.size() == 16);
           acc = generateMFMAOp(mfmaInsnName, valA[0], valB[kRep], acc,
                                broadcastCtrl, kRep);
         }
         if (mDim == 4 and transpose) {
+          llvm::outs() << "mDim=4, tranpose\n";
           assert(valA.size() == 1 and valB.size() == 16);
           Value broadcastValA = broadcastGroup(valA[0], kRep, numRepeats);
           acc = generateMFMAOp(mfmaInsnName, valB[kRep], broadcastValA, acc);
@@ -428,10 +430,10 @@ struct DotOpMFMAConversionHelper {
     auto operandA = getValuesFromDotOperandLayoutStruct(
         loadedA, numRepB, numRepM, numRepK, kWidthA, kBaseA,
         aTensorTy.getElementType(), allowXF32, preserveBF16);
-        llvm::outs() << "operandB----------\n";
-        auto operandB = getValuesFromDotOperandLayoutStruct(
-        loadedB, numRepB, numRepN, numRepK, kWidthB, kBaseB,
-        aTensorTy.getElementType(), allowXF32, preserveBF16);
+    llvm::outs() << "operandB----------\n";
+    auto operandB = getValuesFromDotOperandLayoutStruct(
+    loadedB, numRepB, numRepN, numRepK, kWidthB, kBaseB,
+    aTensorTy.getElementType(), allowXF32, preserveBF16);
 
     auto dstElemTy = dTensorTy.getElementType();
     auto fc = unpackLLElements(loc, loadedC, rewriter);
@@ -442,6 +444,7 @@ struct DotOpMFMAConversionHelper {
     const int subBlocks =
         getNumSubmatrices(aTensorTy.getElementType(), mDim, nDim);
     auto elemsPerVec = mDim * nDim * subBlocks / warpSize;
+    llvm::outs() << "elemsPerVec = " << elemsPerVec << ", subBlocks = " << subBlocks << "\n";
 
     Value firstMfma;
     auto vecTy = vec_ty(dstElemTy, elemsPerVec);
@@ -556,7 +559,6 @@ struct DotOpMFMAConversionHelper {
           if (32 == kBase)
             resPack.push_back(b.bitcast(vec, vec_ty(i32_ty, 8)));
         } else {
-          llvm::outs() << "vec_size = " << vec << "\n";
           resPack.push_back(vec);
         }
       }
@@ -576,13 +578,12 @@ struct DotOpMFMAConversionHelper {
     auto elems = unpackLLElements(loc, value, rewriter);
     int kpack = kWidth / kBase;
     llvm::outs() << "kPack = " << kpack << ", kWidth = " << kWidth << ", kBase = " << kBase << "\n";
-    llvm::outs() << "batch = " << batch << ", n0 = " << n0 << ", n1 = " << n1 << "\n";
+    llvm::outs() << "batch = " << batch << ", n0 = " << n0 << ", n1 = " << n1 << ", elem_size = " << elems.size() << "\n";
     SmallVector<ValueTable> dotOpVals(kpack);
     for (int b = 0; b < batch; ++b) {
       for (int i = 0; i < n0; i++) {
         for (int j = 0; j < n1; j++) {
           Type elemTy = typeConverter->convertType(type);
-          llvm::outs() << "loc1, elemTy = " << elemTy << ", kWidth = " << kWidth << "\n";
           Type ty = vec_ty(elemTy, kWidth);
           Value rawElems = tb.undef(ty);
           for (int k = 0; k < kWidth; ++k) {

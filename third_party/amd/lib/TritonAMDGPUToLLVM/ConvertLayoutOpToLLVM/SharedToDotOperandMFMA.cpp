@@ -78,6 +78,8 @@ llvm::SmallVector<llvm::SmallVector<Value>> computeTensorElemMappingInBlock(
   auto numK = reps[2];
   const int loadsPerThread = numOfElems / loadVecSize;
   llvm::outs() << "numK = " << numK << ", loadsPerThreads = " << loadsPerThread << ", loadVecSize = " << loadVecSize << "\n";
+  llvm::outs() << "nonKDim = " << iNonKDim << ", kDim = " << iKDim << "\n";
+  llvm::outs() << "elemsPerInstr = {" << elemsPerInstr[0] << ", " << elemsPerInstr[1] << "}\n";
   llvm::SmallVector<llvm::SmallVector<Value>> mapping(numK * loadsPerThread);
 
   Value _0 = b.i32_val(0);

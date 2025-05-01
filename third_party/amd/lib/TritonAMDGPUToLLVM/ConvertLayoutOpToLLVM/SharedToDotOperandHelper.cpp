@@ -148,6 +148,7 @@ llvm::SmallVector<Value> computeOffsetsAType(
 
   if (!isSwizzlePatternFitsIntoBlock(srcLayout, 0, reps, elemsPerInstr,
                                      warpsPerBlock)) {
+    llvm::outs() << "UseSwizzle, loc111111\n";
     for (int block = 0; block < numBlocks; ++block) {
       int blockNonKOffset = block * nonKDim * warpsPerBlock;
       for (int i = 0; i < blockSize; ++i) {
@@ -158,6 +159,7 @@ llvm::SmallVector<Value> computeOffsetsAType(
       }
     }
   } else {
+    llvm::outs() << "NotUseSwizzle, loc111111\n";
     // compute inblock offsets once and reuse them for all blocks
     llvm::SmallVector<Value> inblockOffset(mapping.size());
     for (int i = 0; i < mapping.size(); ++i) {
@@ -170,7 +172,7 @@ llvm::SmallVector<Value> computeOffsetsAType(
       int blockNonKOffset = block * nonKDim * warpsPerBlock;
       Value offAdjust =
           b.mul(b.i32_val(blockNonKOffset), smemStrides[rank - 2]);
-      for (int i = 0; i < blockSize; ++i)
+    for (int i = 0; i < blockSize; ++i)
         aOffsets[block * blockSize + i] = b.add(offAdjust, inblockOffset[i]);
     }
   }

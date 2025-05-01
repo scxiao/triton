@@ -501,6 +501,7 @@ public:
                            Float8E4M3FNType, Float8E5M2Type>(aElemTy);
     bool isTransposed =
         isChainDotHead(dotOp) || isChainDotTail(dotOp) || !isFP8;
+    llvm::outs() << "isTransposed = " << isTransposed << "\n";
     ttg::AMDMfmaEncodingAttr mfmaEnc = ttg::AMDMfmaEncodingAttr::get(
         oldRetType.getContext(),
         /*versionMajor*/ mfmaVersion, /*versionMinor*/ 0, warpsPerTile,
