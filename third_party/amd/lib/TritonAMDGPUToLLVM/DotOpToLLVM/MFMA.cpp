@@ -768,6 +768,8 @@ LogicalResult convertScaledMFMA(triton::DotScaledOp op,
                                 triton::DotScaledOp::Adaptor adaptor,
                                 const LLVMTypeConverter *typeConverter,
                                 ConversionPatternRewriter &rewriter) {
+  llvm::outs() << "a_encoding = " << op.getA().getType().getEncoding() << "\n";
+  llvm::outs() << "b_encoding = " << op.getB().getType().getEncoding() << "\n";
   assert(isa<DotOperandEncodingAttr>(op.getA().getType().getEncoding()) &&
          isa<DotOperandEncodingAttr>(op.getB().getType().getEncoding()) &&
          "Both lhs and rhs should be in DotOperand layout.");

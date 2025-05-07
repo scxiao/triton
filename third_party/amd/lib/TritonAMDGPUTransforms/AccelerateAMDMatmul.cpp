@@ -520,6 +520,7 @@ public:
     if ((aElemTy.isF16() || aElemTy.isBF16()) && isChainDotTail(dotOp))
       kWidth = 4;
 
+    llvm::outs() << "withScale = " << withScale << "\n";
     Value newDot;
     if (withScale) {
       // If a scaled mfma instruction is chosen, we will rewrite the DotOp to a
@@ -579,18 +580,30 @@ public:
 
   LogicalResult matchAndRewrite(triton::DotScaledOp dotOp,
                                 PatternRewriter &rewriter) const override {
+
+    llvm::outs() << "dot_scale, loc0000\n";
     // TODO: add support for m/n packed formats.
     if (!dotOp.getLhsKPack() || !dotOp.getRhsKPack())
       return failure();
+
+    llvm::outs() << "dot_scale, loc111\n";
+
     using TensorValue = TypedValue<RankedTensorType>;
 
     RankedTensorType oldRetType = dotOp.getType();
-    if (!isa_and_nonnull<BlockedEncodingAttr>(oldRetType.getEncoding()))
+    if (!isa_and_nonnull<BlockedEncodingAttr>(oldRetType.getEncoding())) {
+      llvm::outs() << "dot_scale, return222\n";
       return rewriter.notifyMatchFailure(
           dotOp, "expected blocked encoding result tensor");
+    }
+
+    llvm::outs() << "dot_scale, loc222\n";
+
     unsigned rank = oldRetType.getRank();
     if (rank == 3)
       return rewriter.notifyMatchFailure(dotOp, "NYI: 3d case");
+
+    llvm::outs() << "dot_scale, loc333\n";
 
     TensorValue a = dotOp.getA();
     TensorValue b = dotOp.getB();
@@ -598,6 +611,8 @@ public:
     TensorValue bScale = dotOp.getBScale();
     if (aScale && bScale)
       return rewriter.notifyMatchFailure(dotOp, "NYI: both LHS and RHS scale");
+
+    llvm::outs() << "dot_scale, loc444\n";
 
     ScaleDotElemType aElemType = dotOp.getAElemType();
     ScaleDotElemType bElemType = dotOp.getBElemType();
@@ -611,6 +626,8 @@ public:
     if (!supportsTypes(aElemType) || !supportsTypes(bElemType))
       return rewriter.notifyMatchFailure(dotOp, "NYI: mxfp6 operand");
 
+    llvm::outs() << "dot_scale, loc555\n";
+
     MLIRContext *ctx = dotOp.getContext();
     auto moduleOp = dotOp->getParentOfType<ModuleOp>();
     int numWarps = ttg::lookupNumWarps(dotOp);
@@ -621,6 +638,7 @@ public:
     // Choose a suitable MFMA instruction for this scaled dot op.
     bool useFp16 = aElemType == ScaleDotElemType::FP16 ||
                    bElemType == ScaleDotElemType::FP16;
+    llvm::outs() << "dot_scaled, loc0\n";
     FailureOr<MfmaIntrinsic> mfmaInstr =
         chooseMfmaInstruction(dotOp, mfmaVersion, nonKDim, useFp16);
     if (failed(mfmaInstr))
@@ -669,7 +687,7 @@ public:
 
     auto newAcc = rewriter.create<ttg::ConvertLayoutOp>(
         dotOp.getC().getLoc(), newRetType, dotOp.getC());
-
+llvm::outs() << "dot_scale, loc1\n";
     auto upcastForMMA = [&](TensorValue v, int idx,
                             ScaleDotElemType type) -> TensorValue {
       auto vType = v.getType();
@@ -710,6 +728,7 @@ public:
     blockWarpsPerCTA[0] = numWarps;
     auto newScaleEncoding = triton::gpu::BlockedEncodingAttr::get(
         ctx, {1, 1}, threadsPerWarp, blockWarpsPerCTA, {1, 0}, ctaLayout);
+        llvm::outs() << "dot_scale, loc2\n";
 
     auto upcastMXFP = [&](TensorValue v, TensorValue scale,
                           ScaleDotElemType elemType, bool fastMath) -> Value {
@@ -730,6 +749,7 @@ public:
       return rewriter.create<amdgpu::UpcastMXFPOp>(
           dotOp.getLoc(), outputType, v, convOp, elemType, fastMath);
     };
+    llvm::outs() << "dot_scale, loc3\n";
 
     Value scaledA =
         upcastMXFP(a, aScale, dotOp.getAElemType(), dotOp.getFastMath());
@@ -738,7 +758,9 @@ public:
     auto newDot = rewriter.create<DotOp>(dotOp.getLoc(), newRetType, scaledA,
                                          scaledB, newAcc);
     rewriter.replaceOpWithNewOp<ttg::ConvertLayoutOp>(dotOp, oldRetType,
-                                                      newDot);
+      newDot);
+    llvm::outs() << "dot_scale, loc4\n";
+
     return success();
   }
 };
@@ -758,19 +780,23 @@ public:
                                 PatternRewriter &rewriter) const override {
     using TensorValue = TypedValue<RankedTensorType>;
 
+    llvm::outs() << "MFMAF8F6F4, loc11\n";
     if (mfmaVersion != 4) {
       return rewriter.notifyMatchFailure(
           dotOp, "F8F6F4 scaled dot is only natively supported on gfx950");
     }
+    llvm::outs() << "MFMAF8F6F4, loc22\n";
 
     RankedTensorType oldRetType = dotOp.getType();
     if (!isa_and_nonnull<BlockedEncodingAttr>(oldRetType.getEncoding()))
       return rewriter.notifyMatchFailure(
           dotOp, "expected blocked encoding result tensor");
 
+    llvm::outs() << "MFMAF8F6F4, loc33\n";
     unsigned rank = oldRetType.getRank();
     if (rank == 3)
       return rewriter.notifyMatchFailure(dotOp, "NYI: 3d case");
+    llvm::outs() << "MFMAF8F6F4, loc44\n";
 
     TensorValue a = dotOp.getA();
     TensorValue b = dotOp.getB();
@@ -790,6 +816,8 @@ public:
       return rewriter.notifyMatchFailure(dotOp, "NYI: mxfp6");
     }
 
+    llvm::outs() << "MFMAF8F6F4, loc55\n";
+
     bool bothScalesAbsent = !aScale && !bScale;
 
     MLIRContext *ctx = dotOp.getContext();
@@ -800,6 +828,7 @@ public:
       return rewriter.notifyMatchFailure(dotOp,
                                          "num_warps==1 is not supported");
 
+    llvm::outs() << "MFMAF8F6F4, loc66\n";
     // Choose a suitable Scaled MFMA instruction for this scaled dot op.
     FailureOr<MfmaIntrinsic> mfmaInstr =
         chooseMfmaInstruction(dotOp, mfmaVersion, nonKDim);
@@ -807,6 +836,7 @@ public:
       return rewriter.notifyMatchFailure(dotOp,
                                          "cannot choose scaled mfma intrinsic");
 
+    llvm::outs() << "MFMAF8F6F4, loc77\n";
     auto mDim = mfmaInstr->mDim;
     auto nDim = mfmaInstr->nDim;
     auto kDim = mfmaInstr->kDim;
@@ -859,6 +889,7 @@ public:
     a = convertInputLayout(a, 0);
     b = convertInputLayout(b, 1);
 
+    llvm::outs() << "MFMAF8F6F4, loc88\n";
     StringAttr kWarp = StringAttr::get(ctx, "warp");
     auto convertScaleLayout = [&](TensorValue scale,
                                   llvm::ArrayRef<int64_t> valShape,
@@ -880,6 +911,7 @@ public:
         shape = llvm::to_vector(scale.getType().getShape());
       }
 
+      llvm::outs() << "MFMAF8F6F4, loc99\n";
       LinearLayout newLL =
           chooseScaledMfmaScaleLayout(ctx, idx, warpBases, shape, mDim);
 
@@ -887,6 +919,7 @@ public:
       // Scale's data type is always i8
       auto newScaleType = RankedTensorType::get(shape, i8_ty, newScaleEncoding);
 
+      llvm::outs() << "MFMAF8F6F4, loc10\n";
       if (!scale) {
         // 0x7F is 1.0 in E8M0
         return rewriter.create<arith::ConstantOp>(
@@ -902,10 +935,12 @@ public:
     auto newBScale =
         convertScaleLayout(bScale, bShape, bEncLL, /*dotOperandIdx=*/1);
 
+    llvm::outs() << "MFMAF8F6F4, loc1_1\n";
     auto newDot = rewriter.create<triton::DotScaledOp>(
         dotOp.getLoc(), newRetType, a, b, newAcc, newAScale, newBScale,
         aElemType, bElemType, dotOp.getFastMath());
 
+    llvm::outs() << "MFMAF8F6F4, loc12\n";
     rewriter.replaceOpWithNewOp<ttg::ConvertLayoutOp>(dotOp, oldRetType,
                                                       newDot);
 
