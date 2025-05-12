@@ -500,7 +500,7 @@ public:
     bool isFP8 = llvm::isa<Float8E5M2FNUZType, Float8E4M3FNUZType,
                            Float8E4M3FNType, Float8E5M2Type>(aElemTy);
     bool isTransposed =
-        isChainDotHead(dotOp) || isChainDotTail(dotOp) || !isFP8;
+        isChainDotHead(dotOp) || isChainDotTail(dotOp);
     llvm::outs() << "isTransposed = " << isTransposed << "\n";
     ttg::AMDMfmaEncodingAttr mfmaEnc = ttg::AMDMfmaEncodingAttr::get(
         oldRetType.getContext(),
@@ -592,6 +592,7 @@ public:
                                mfmaInstr->aElementType);
       b = convertAndCastTensor(rewriter, b, newBEncoding,
                                mfmaInstr->bElementType);
+      llvm::outs() << "beforeCreateDot*****************\n";
       newDot = rewriter.create<tt::DotOp>(dotOp.getLoc(), newAcc.getType(), a,
                                           b, newAcc, dotOp.getInputPrecision(),
                                           dotOp.getMaxNumImpreciseAcc());

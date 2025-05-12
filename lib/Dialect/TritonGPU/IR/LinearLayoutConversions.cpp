@@ -661,15 +661,15 @@ LinearLayout mfmaDotToLinearLayout(DotOperandEncodingAttr dotMfmaLayout,
   int mIndex = 0 + hasBatchDim;
 
   int32_t kWidth = dotMfmaLayout.getKWidth();
-  unsigned opIdx = dotMfmaLayout.getOpIdx() == 0;
-  auto kDim = opIdx ? rank - 1 : rank - 2;
+  unsigned opIdx = dotMfmaLayout.getOpIdx();
+  auto kDim = opIdx == 0 ? rank - 1 : rank - 2;
   int32_t kSize = shape[kDim];
   auto warpsPerCTA = mfmaLayout.getWarpsPerCTA();
 
   MLIRContext *ctx = dotMfmaLayout.getContext();
   SmallVector<StringAttr> outDimNames = standardOutDimNames(ctx, rank);
 
-  llvm::outs() << "mDim = " << mfmaLayout.getMDim() << ", nDim = " << mfmaLayout.getNDim() << ", kWidth = " << kWidth << ", kSize " << kSize << "\n";
+  llvm::outs() << "mDim = " << mfmaLayout.getMDim() << ", nDim = " << mfmaLayout.getNDim() << ", kWidth = " << kWidth << ", kSize = " << kSize << "\n";
 
   StringAttr kRegister = S("register");
   StringAttr kLane = S("lane");
@@ -717,20 +717,20 @@ LinearLayout mfmaDotToLinearLayout(DotOperandEncodingAttr dotMfmaLayout,
     kTileSize = kWidth * 4;
   } else if (mfmaLayout.getMDim() == 4 && mfmaLayout.getNDim() == 64) {
     llvm::outs() << "layout1\n";
-    if (opIdx == 1) {
+    if (opIdx == 0) {
       laneBase = {{0, 1}, {0, 2}, {4, 0}, {8, 0}, {16, 0}, {32, 0}};
     } else {
-      assert(opIdx == 0);
+      assert(opIdx == 1);
       laneBase = {{0, 1}, {0, 2}, {0, 4}, {0, 8}, {0, 16}, {0, 32}};
     }
     kTileSize = 64;
   } else if (mfmaLayout.getMDim() == 64 && mfmaLayout.getNDim() == 4) {
     llvm::outs() << "layout2\n";
-    if (opIdx == 1) {
+    if (opIdx == 0) {
       laneBase = {{0, 1}, {0, 2}, {0, 4}, {0, 8}, {0, 16}, {0, 32}};
       kTileSize = 4;
     } else {
-      assert(opIdx == 0);
+      assert(opIdx == 1);
       laneBase = {{1, 0}, {2, 0}, {0, 4}, {0, 8}, {0, 16}, {0, 32}};
       kTileSize = 64;
     }

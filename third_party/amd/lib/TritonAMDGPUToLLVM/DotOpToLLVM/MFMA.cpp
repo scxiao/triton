@@ -513,7 +513,7 @@ struct DotOpMFMAConversionHelper {
     int numIntrinsics = wideOperand ? 16 : 1;
     auto rawTy = mlir::cast<VectorType>(rawElems.getType());
     int intrinsicK = kBase / numIntrinsics;
-    llvm::outs() << "intrinsicK = " << intrinsicK << "\n";
+    llvm::outs() << "intrinsicK = " << intrinsicK << ", numIntrinsics = " << numIntrinsics << "\n";
     SmallVector<SmallVector<Value>> results;
     auto vecTy = vec_ty(type, intrinsicK);
     if (type.isBF16() && !preserveBF16)
@@ -523,8 +523,10 @@ struct DotOpMFMAConversionHelper {
       Value vec = b.undef(vecTy);
       for (int intrinsic = 0; intrinsic < numIntrinsics; ++intrinsic) {
         for (int elemId = 0; elemId < intrinsicK; ++elemId) {
+          int elemOff =
+              elemId + intrinsic * intrinsicK * kpack + k * intrinsicK;
           auto val =
-              b.extract_element(type, rawElems, b.i32_val(elemId + k * kBase));
+              b.extract_element(type, rawElems, b.i32_val(elemOff));
           if (type.isBF16() && !preserveBF16) {
             // rocdl.mfma.f32.32x32x8bf16.1k calls for input of i16 type
             auto cast = b.bitcast(val, i16_ty);
