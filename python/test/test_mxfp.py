@@ -1,10 +1,6 @@
 import triton
 import triton.language as tl
-# from triton.tools.env import getTritonBasePath
 from triton.tools.mxfp import MXFP4Tensor, MXScaleTensor
-import warnings
-
-import os
 import torch
 
 
@@ -129,8 +125,8 @@ def triton_gemm_mxfp(config):
     NUM_CTAS = config['NUM_CTAS']
     cStrideM = 1
 
-    # dtype = "float8_e5m2"
-    dtype = "float4"
+    dtype = "float8_e5m2"
+    # dtype = "float4"
     kernel_file = "mxgemm_kernel"
     outdir = "mxgemm_kernel"
     num_stages = 1
