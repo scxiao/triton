@@ -7,10 +7,6 @@
 #include "llvm/ADT/SetVector.h"
 #include "llvm/Support/raw_ostream.h"
 
-#include "triton/Dialect/Triton/IR/Dialect.h"
-#include "triton/Dialect/TritonGPU/IR/Dialect.h"
-#include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
-#include <atomic>
 #include <limits>
 
 namespace mlir {
@@ -67,6 +63,11 @@ getScratchCvtInOutVecLengths(RankedTensorType srcTy, RankedTensorType dstTy);
 ScratchConfig getScratchConfigForCvt(RankedTensorType srcTy,
                                      RankedTensorType dstTy);
 
+unsigned getNumScratchElemsSwizzledCvt(RankedTensorType srcTy,
+                                       RankedTensorType dstTy);
+
+unsigned getNumScratchElemsPaddedCvt(RankedTensorType srcTy,
+                                     RankedTensorType dstTy);
 } // namespace triton
 
 /// Modified from llvm-15.0: llvm/ADT/AddressRanges.h
@@ -191,11 +192,9 @@ private:
     /// Virtual: triton.call
     enum class BufferKind { Explicit, Scratch, Virtual };
 
-    /// MT: thread-safe
-    inline static std::atomic<BufferId> nextId = 0;
-
     BufferKind kind;
     BufferId id;
+    Operation *owner;
     size_t size;
     size_t alignment;
     size_t offset;
@@ -203,10 +202,9 @@ private:
     bool operator==(const BufferT &other) const { return id == other.id; }
     bool operator<(const BufferT &other) const { return id < other.id; }
 
-    BufferT() : BufferT(BufferKind::Explicit, 0) {}
-    BufferT(BufferKind kind, size_t size, size_t alignment = 4,
-            size_t offset = 0)
-        : kind(kind), id(nextId++), size(size), alignment(alignment),
+    BufferT(BufferKind kind, BufferId id, Operation *owner, size_t size,
+            size_t alignment = 4, size_t offset = 0)
+        : kind(kind), id(id), owner(owner), size(size), alignment(alignment),
           offset(offset) {}
 
     size_t setOffsetAligned(size_t newOffset) {
@@ -226,14 +224,16 @@ private:
 private:
   template <BufferT::BufferKind Kind, typename KeyType, typename... Args>
   void addBuffer(KeyType &key, Args &&...args) {
-    auto buffer = BufferT(Kind, std::forward<Args>(args)...);
-    bufferSet[buffer.id] = std::move(buffer);
+    BufferId nextId = bufferIdCounter++;
+    auto [it, inserted] = bufferSet.insert_or_assign(
+        nextId, BufferT(Kind, nextId, key, std::forward<Args>(args)...));
+    BufferT *buffer = &it->second;
     if constexpr (Kind == BufferT::BufferKind::Explicit) {
-      valueBuffer[key] = &bufferSet[buffer.id];
+      valueBuffer[key] = buffer;
     } else if constexpr (Kind == BufferT::BufferKind::Virtual) {
-      opVirtual[key] = &bufferSet[buffer.id];
+      opVirtual[key] = buffer;
     } else {
-      opScratch[key] = &bufferSet[buffer.id];
+      opScratch[key] = buffer;
     }
   }
 
@@ -249,6 +249,8 @@ private:
   AliasBufferMapT aliasBuffer;
   BufferSetT bufferSet;
   size_t sharedMemorySize = 0;
+
+  size_t bufferIdCounter = 0;
 
   friend class triton::AllocationAnalysis;
 };

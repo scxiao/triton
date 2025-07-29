@@ -167,6 +167,25 @@ template <typename VecT> bool isConsecutive(const VecT &vec) {
   return isConsecutive(ArrayRef(vec));
 }
 
+template <typename T> auto seq(T start, T end, T step) {
+  auto len = ceil<T>(end - start, step);
+  return llvm::map_range(llvm::seq<T>(0, len),
+                         [=](T i) { return start + i * step; });
+}
+
+// Combine the current mask with the given predicate.
+Value getPredMask(RewriterBase &rewriter, Type typeLike, Value currentMask,
+                  Value pred);
+
+// Get the value of the induction variable at the end of the loop.
+Value getLastInductionValue(OpBuilder &b, scf::ForOp loop);
+
+MakeTensorPtrOp getMakeTensorPtrOp(Value v);
+
+bool isHostSideDescriptor(Value v);
+
+bool isKernel(FunctionOpInterface funcOp);
+
 } // namespace triton
 } // namespace mlir
 

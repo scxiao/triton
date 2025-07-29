@@ -64,15 +64,25 @@ struct BufferEmitter {
 
   // Create a resource descriptor that points to the area of memory we want to
   // load from
-  Value createResourceDescriptor(Value basePtr);
+  Value createResourceDescriptor(Value basePtr, Value inferredStride = nullptr);
 
   // Emit a predicated rocdl.raw.ptr.buffer.load
   Value emitLoad(Type type, Value rsrcDesc, Value offset, Value pred,
                  Value falseVal, CacheModifier cm);
 
+  // Emit a predicated rocdl.raw.ptr.buffer.load.lds
+  ROCDL::RawPtrBufferLoadLdsOp emitLoadToLds(Type type, Value byteWidth,
+                                             Value rsrcDesc, Value offset,
+                                             Value dst, Value pred,
+                                             CacheModifier cm);
+
   // Emit a predicated rocdl.raw.ptr.buffer.atomic.* RMWOp
   Value emitAtomicRMW(RMWOp rmwType, Type type, Value rsrcDesc, Value offset,
                       Value data, Value pred, bool hasUsers);
+
+  // Emit a predicated rocdl.raw.ptr.buffer.atomic.cmpswap
+  Value emitAtomicCAS(Type type, Value rsrcDesc, Value offset, Value casCmpVal,
+                      Value casStoreVal, Value pred, bool hasUsers);
 
   // Emit a predicated rocdl.raw.ptr.buffer.store
   void emitStore(Value rsrcDesc, Value offset, Value data, Value pred,

@@ -41,26 +41,27 @@ struct ClipAsyncCopySizePerThread
     Value other = copyOp.getOther();
     auto srcTy = cast<RankedTensorType>(src.getType());
     auto dstTy = cast<MemDescType>(copyOp.getResult().getType());
-    auto blockEnc = dyn_cast<BlockedEncodingAttr>(srcTy.getEncoding());
-    if (!blockEnc)
+    auto blockedEnc = dyn_cast<BlockedEncodingAttr>(srcTy.getEncoding());
+    if (!blockedEnc)
       return rewriter.notifyMatchFailure(copyOp,
                                          "src must be of blocked encoding");
-    auto sharedEnc = cast<SharedEncodingAttr>(dstTy.getEncoding());
+    auto sharedEnc = dyn_cast<SwizzledSharedEncodingAttr>(dstTy.getEncoding());
+    if (!sharedEnc)
+      return failure();
     auto sharedVec = sharedEnc.getVec();
 
     // obtain max contiguous copy size
     // Note this can be further optimized, as copyContigSize can be even
     // smaller when lowering, depending on contiguity and mask alignment
     // (see AsyncCopyGlobalToLocalOpConversion)
-    auto elemBitWidth = dstTy.getElementTypeBitWidth();
-    auto regToSharedLayout =
-        getRegToSharedLayout(rewriter.getContext(), srcTy.getShape(), blockEnc,
-                             sharedEnc, elemBitWidth);
-    auto copyContigSize = regToSharedLayout.getNumConsecutiveInOut();
+    LinearLayout regLayout = triton::gpu::toLinearLayout(srcTy);
+    LinearLayout sharedLayout = triton::gpu::toLinearLayout(dstTy);
+    auto copyContigSize =
+        regLayout.invertAndCompose(sharedLayout).getNumConsecutiveInOut();
 
     // obtain block sizePerThread along contig dim
-    auto sizePerThread = blockEnc.getSizePerThread();
-    auto blockContigSize = sizePerThread[blockEnc.getOrder()[0]];
+    auto contigPerThread = getContigPerThread(srcTy);
+    auto blockContigSize = contigPerThread[blockedEnc.getOrder()[0]];
 
     if (blockContigSize <= copyContigSize)
       return rewriter.notifyMatchFailure(
@@ -68,21 +69,21 @@ struct ClipAsyncCopySizePerThread
           "blocked sizePerThread along contiguous dim must be greater than the "
           "max contiguous copy size ");
 
-    sizePerThread[blockEnc.getOrder()[0]] = copyContigSize;
+    contigPerThread[blockedEnc.getOrder()[0]] = copyContigSize;
 
     // obtain new blockedEnc based on clipped sizePerThread
     auto mod = copyOp->getParentOfType<ModuleOp>();
-    int numWarps = TritonGPUDialect::getNumWarps(mod);
+    int numWarps = lookupNumWarps(copyOp);
     int threadsPerWarp = TritonGPUDialect::getThreadsPerWarp(mod);
     auto newBlockEnc = BlockedEncodingAttr::get(
-        copyOp.getContext(), srcTy.getShape(), sizePerThread,
-        blockEnc.getOrder(), numWarps, threadsPerWarp, blockEnc.getCTALayout());
+        copyOp.getContext(), srcTy.getShape(), contigPerThread,
+        blockedEnc.getOrder(), numWarps, threadsPerWarp,
+        blockedEnc.getCTALayout());
 
     // insert cvt's after src, mask, and other
     auto convertBlockLayout = [&](Value src, BlockedEncodingAttr enc) {
-      auto ty = cast<TensorType>(src.getType());
-      auto newTy =
-          RankedTensorType::get(ty.getShape(), ty.getElementType(), enc);
+      auto ty = cast<RankedTensorType>(src.getType());
+      auto newTy = ty.cloneWithEncoding(enc);
       auto cvt = rewriter.create<ConvertLayoutOp>(copyOp->getLoc(), newTy, src);
       return cvt.getResult();
     };
@@ -104,9 +105,10 @@ struct ClipAsyncCopySizePerThread
   }
 };
 
-class CoalesceAsyncCopyPass
-    : public impl::TritonGPUCoalesceAsyncCopyBase<CoalesceAsyncCopyPass> {
-public:
+struct CoalesceAsyncCopyPass
+    : impl::TritonGPUCoalesceAsyncCopyBase<CoalesceAsyncCopyPass> {
+  using Base::Base;
+
   void runOnOperation() override {
     ModuleOp m = getOperation();
     MLIRContext *context = &getContext();
@@ -114,7 +116,7 @@ public:
     mlir::RewritePatternSet patterns(context);
     patterns.add<ClipAsyncCopySizePerThread>(context);
 
-    if (failed(applyPatternsAndFoldGreedily(m, std::move(patterns))))
+    if (failed(applyPatternsGreedily(m, std::move(patterns))))
       signalPassFailure();
   }
 };

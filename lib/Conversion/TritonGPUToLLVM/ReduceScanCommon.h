@@ -97,12 +97,12 @@ inline SmallVector<Value> applyCombineOp(Location loc,
     thenBlockArgs.push_back(undef);
     thenBlock->addArgument(ty, loc);
   }
-  rewriter.create<cf::CondBranchOp>(loc, pred, &newCombine, combineArgs,
-                                    thenBlock, thenBlockArgs);
+  rewriter.create<LLVM::CondBrOp>(loc, pred, &newCombine, combineArgs,
+                                  thenBlock, thenBlockArgs);
 
   // Split a block after the call.
   rewriter.setInsertionPointToEnd(&newCombine);
-  rewriter.replaceOpWithNewOp<cf::BranchOp>(returnOp, thenBlock, results);
+  rewriter.replaceOpWithNewOp<LLVM::BrOp>(returnOp, results, thenBlock);
   rewriter.setInsertionPointToStart(thenBlock);
   return SmallVector<Value>(thenBlock->getArguments());
 }
@@ -131,6 +131,7 @@ public:
                                   ConversionPatternRewriter &rewriter,
                                   const TargetInfoBase &targetInfo) const {
     auto loc = op.getLoc();
+    auto b = TritonLLVMOpBuilder(loc, rewriter);
     // indices will store the index of the op operands in descending order
     // of their bitwidths
     std::vector<unsigned> indices(op.getNumOperands());
@@ -147,8 +148,8 @@ public:
     indexToBase[indices[0]] = basePtr;
     for (unsigned i = 1; i < op.getNumOperands(); ++i) {
       indexToBase[indices[i]] =
-          gep(basePtr.getType(), getElementType(op, indices[i - 1]),
-              indexToBase[indices[i - 1]], i32_val(elems));
+          b.gep(basePtr.getType(), getElementType(op, indices[i - 1]),
+                indexToBase[indices[i - 1]], b.i32_val(elems));
     }
     // smemBases[k] is the base pointer for the k-th operand
     SmallVector<Value> smemBases(op.getNumOperands());

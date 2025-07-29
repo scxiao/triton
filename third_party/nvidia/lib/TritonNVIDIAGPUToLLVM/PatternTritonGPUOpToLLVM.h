@@ -12,7 +12,8 @@ namespace NVIDIA {
 
 void populateBarrierOpToLLVMPatterns(LLVMTypeConverter &typeConverter,
                                      RewritePatternSet &patterns,
-                                     PatternBenefit benefit);
+                                     PatternBenefit benefit,
+                                     NVIDIA::TargetInfo &info);
 
 void populateClusterOpsToLLVMPatterns(LLVMTypeConverter &typeConverter,
                                       RewritePatternSet &patterns,
@@ -34,20 +35,20 @@ void populateConvertLayoutOpToLLVMOptimizedPatterns(
 
 void populateDotOpToLLVMPatterns(LLVMTypeConverter &typeConverter,
                                  RewritePatternSet &patterns,
-                                 PatternBenefit benefit);
+                                 int computeCapability, PatternBenefit benefit);
 
 void populateElementwiseOpToLLVMPatterns(
     LLVMTypeConverter &typeConverter, RewritePatternSet &patterns,
     ModuleAxisInfoAnalysis &axisInfoAnalysis, int computeCapability,
     const TargetInfo &targetInfo, PatternBenefit benefit);
 
-void populateUpcastMXFPToLLVMPatterns(LLVMTypeConverter &typeConverter,
-                                      RewritePatternSet &patterns,
-                                      const TargetInfo &targetInfo,
-                                      PatternBenefit benefit);
+void populateFp4ToFpToLLVMPatterns(LLVMTypeConverter &typeConverter,
+                                   RewritePatternSet &patterns,
+                                   PatternBenefit benefit);
 
 void populateLoadStoreOpToLLVMPatterns(LLVMTypeConverter &typeConverter,
                                        const TargetInfo &targetInfo,
+                                       int computeCapability,
                                        RewritePatternSet &patterns,
                                        ModuleAxisInfoAnalysis &axisInfoAnalysis,
                                        PatternBenefit benefit);
@@ -70,6 +71,18 @@ void populateClampFOpToLLVMPattern(LLVMTypeConverter &typeConverter,
                                    ModuleAxisInfoAnalysis &axisInfoAnalysis,
                                    int computeCapability,
                                    PatternBenefit benefit);
+
+void populateTCGen5MMAOpToLLVMPattern(LLVMTypeConverter &typeConverter,
+                                      RewritePatternSet &patterns,
+                                      PatternBenefit benefit);
+
+void populateTensorMemoryOpToLLVMPattern(LLVMTypeConverter &typeConverter,
+                                         RewritePatternSet &patterns,
+                                         PatternBenefit benefit);
+
+void populateTensorMemorySubviewOpToLLVMPattern(
+    LLVMTypeConverter &typeConverter, RewritePatternSet &patterns,
+    PatternBenefit benefit);
 } // namespace NVIDIA
 } // namespace triton
 } // namespace mlir

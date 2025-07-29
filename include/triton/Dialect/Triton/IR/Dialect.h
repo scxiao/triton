@@ -35,24 +35,25 @@ public:
 
   virtual LogicalResult
   inferTransOpEncoding(Attribute operandEncoding, ArrayRef<int64_t> shape,
-                       ArrayRef<int32_t> order,
-                       Attribute &resultEncoding) const = 0;
+                       ArrayRef<int32_t> order, Attribute &resultEncoding,
+                       std::optional<Location> loc) const = 0;
 
   virtual LogicalResult
   inferReduceOpEncoding(Attribute operandEncoding, unsigned axis,
-                        Attribute &resultEncoding) const = 0;
+                        Attribute &resultEncoding,
+                        std::optional<Location> loc) const = 0;
 
   virtual LogicalResult
   inferExpandDimsOpEncoding(Attribute operandEncoding, unsigned axis,
                             Attribute &resultEncoding,
-                            std::optional<Location> location) const = 0;
+                            std::optional<Location> loc) const = 0;
 
   // Note: This function only verifies the operand encoding.  It doesn't infer
   // the result encoding.
   virtual LogicalResult
   inferDotOpEncoding(Attribute operandEncoding, unsigned opIdx,
                      Attribute retEncoding,
-                     std::optional<Location> location) const = 0;
+                     std::optional<Location> loc) const = 0;
 
   // Tries to compute the encoding for the result of a reshape operation that
   // makes the reshape a "nop", i.e. the same GPU threads contain the same
@@ -71,11 +72,13 @@ public:
                         Attribute got, std::optional<Location> loc) const = 0;
 
   virtual LogicalResult
-  inferJoinOpEncoding(Attribute srcEnc, Attribute &dstEnc,
-                      std::optional<Location> loc) const = 0;
+  inferDefaultJoinOpEncoding(Attribute srcEnc, Attribute &dstEnc,
+                             ArrayRef<int64_t> shape,
+                             std::optional<Location> loc) const = 0;
 
   virtual LogicalResult
   inferSplitOpEncoding(Attribute srcEnc, Attribute &dstEnc,
+                       ArrayRef<int64_t> shape,
                        std::optional<Location> loc) const = 0;
 
   // Verify that the encoding are compatible to be used together in a dot
@@ -83,6 +86,11 @@ public:
   virtual LogicalResult
   verifyDotOpEncodingCompatibility(Operation *op, Attribute operandEncodingA,
                                    Attribute operandEncodingB) const = 0;
+
+  virtual LogicalResult
+  inferFp4ToFpOpEncoding(ArrayRef<int64_t> shape, int axis, Attribute inEnc,
+                         Attribute &outEnc, bool fwdInference,
+                         std::optional<Location> loc) const = 0;
 };
 
 class DialectVerifyTensorLayoutInterface
@@ -91,7 +99,7 @@ public:
   DialectVerifyTensorLayoutInterface(Dialect *dialect) : Base(dialect) {}
 
   virtual LogicalResult
-  verifyTensorLayout(Attribute layout, RankedTensorType type, ModuleOp module,
+  verifyTensorLayout(Attribute layout, RankedTensorType type, Operation *op,
                      function_ref<InFlightDiagnostic()> emitError) const = 0;
 };
 

@@ -1,8 +1,9 @@
 #include "TritonAMDGPUToLLVM/Passes.h"
 
+#include "AsyncUtility.h"
 #include "PatternTritonGPUOpToLLVM.h"
-#include "SchedInstructions.h"
 #include "TargetInfo.h"
+#include "TritonAMDGPUToLLVM/MembarUtility.h"
 #include "mlir/Conversion/ArithToLLVM/ArithToLLVM.h"
 #include "mlir/Conversion/ControlFlowToLLVM/ControlFlowToLLVM.h"
 #include "mlir/Conversion/GPUToNVVM/GPUToNVVMPass.h"
@@ -10,10 +11,12 @@
 #include "mlir/Conversion/MathToLLVM/MathToLLVM.h"
 #include "mlir/Conversion/SCFToControlFlow/SCFToControlFlow.h"
 #include "mlir/Conversion/UBToLLVM/UBToLLVM.h"
+#include "mlir/Dialect/AMDGPU/Utils/Chipset.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
 #include "mlir/Dialect/LLVMIR/ROCDLDialect.h"
 #include "mlir/Pass/Pass.h"
+#include "third_party/amd/include/Analysis/AxisInfoExt.h"
 #include "third_party/amd/include/Dialect/TritonAMDGPU/IR/Dialect.h"
 #include "triton/Analysis/Allocation.h"
 #include "triton/Analysis/AxisInfo.h"
@@ -92,31 +95,23 @@ struct ConvertTritonAMDGPUToLLVM
     TritonGPUToLLVMTypeConverter typeConverter(context, option, targetInfo);
     TritonLLVMConversionTarget convTarget(*context);
 
-    int numWarps = triton::gpu::TritonGPUDialect::getNumWarps(mod);
     int numCTAs = triton::gpu::TritonGPUDialect::getNumCTAs(mod);
     int threadsPerWarp = triton::gpu::TritonGPUDialect::getThreadsPerWarp(mod);
 
-    // Hack: WSMaterialization may have changed the effective number of warps,
-    // in a way that isn't reflected in ttg.num-warps.  If so, we have to
-    // respect that here.
-    if (Attribute attr = mod->getAttr("ttg.num-warp-groups-per-cta")) {
-      numWarps *= cast<IntegerAttr>(attr).getInt();
-    }
-
     // Allocate shared memory and set barrier
     ModuleAllocation allocation(mod);
-    ModuleMembarAnalysis membarPass(&allocation);
+
+    AMD::annotateLocalLoadsSyncedViaAsyncWait(mod);
+    ModuleMembarAnalysis membarPass(&allocation,
+                                    mlir::triton::AMD::membarFilter);
     membarPass.run();
 
     // Lower functions
     {
-      mlir::LowerToLLVMOptions option(context);
-      TritonGPUToLLVMTypeConverter typeConverter(context, option, targetInfo);
       TritonLLVMFunctionConversionTarget funcTarget(*context);
       RewritePatternSet funcPatterns(context);
-      mlir::triton::populateFuncOpConversionPattern(typeConverter, funcPatterns,
-                                                    numWarps, targetInfo,
-                                                    patternBenefitDefault);
+      mlir::triton::populateFuncOpConversionPattern(
+          typeConverter, funcPatterns, targetInfo, patternBenefitDefault);
       mlir::cf::populateControlFlowToLLVMConversionPatterns(typeConverter,
                                                             funcPatterns);
       if (failed(
@@ -131,8 +126,6 @@ struct ConvertTritonAMDGPUToLLVM
 
     // Convert call and ret ops
     {
-      mlir::LowerToLLVMOptions option(context);
-      TritonGPUToLLVMTypeConverter typeConverter(context, option, targetInfo);
       TritonLLVMFunctionConversionTarget funcTarget(*context);
       RewritePatternSet funcPatterns(context);
       if (failed(
@@ -140,7 +133,7 @@ struct ConvertTritonAMDGPUToLLVM
         return signalPassFailure();
     }
 
-    ModuleAxisInfoAnalysis axisInfoAnalysis(mod);
+    AMD::ModuleAxisInfoAnalysis axisInfoAnalysis(mod);
 
     // Emit logics to get threadId/blockIds/linearized clusterCTAId etc. and
     // cache the values. The reason to do it here is that cluster_ctaid is
@@ -155,8 +148,8 @@ struct ConvertTritonAMDGPUToLLVM
     // patterns
     int AMDBenefit = commonBenefit + 1;
     auto populatePatterns1 = [&](auto populateFunc, int benefit) {
-      populateFunc(typeConverter, patterns, numWarps, axisInfoAnalysis,
-                   allocation, benefit);
+      populateFunc(typeConverter, patterns, axisInfoAnalysis, allocation,
+                   benefit);
     };
 
     auto populatePatterns5 = [&](auto populateFunc, int benefit) {
@@ -164,8 +157,8 @@ struct ConvertTritonAMDGPUToLLVM
     };
 
     auto populatePatterns6 = [&](auto populateFunc, int benefit) {
-      populateFunc(typeConverter, patterns, numWarps, axisInfoAnalysis,
-                   allocation, targetInfo, benefit);
+      populateFunc(typeConverter, patterns, axisInfoAnalysis, allocation,
+                   targetInfo, benefit);
     };
 
     auto populatePatterns7 = [&](auto populateFunc, int benefit) {
@@ -176,14 +169,13 @@ struct ConvertTritonAMDGPUToLLVM
                                                patterns, AMDBenefit);
     mlir::triton::populateConvertLayoutOpToLLVMPatterns(
         typeConverter, targetInfo, patterns, commonBenefit);
-    AMD::populateDotOpToLLVMPatterns(typeConverter, patterns, numWarps,
-                                     axisInfoAnalysis, AMDBenefit);
+    AMD::populateDotOpToLLVMPatterns(typeConverter, patterns, axisInfoAnalysis,
+                                     AMDBenefit);
     AMD::populateElementwiseOpToLLVMPatterns(typeConverter, patterns, ftz,
                                              axisInfoAnalysis, allocation,
                                              targetInfo, AMDBenefit);
     AMD::populateLoadStoreOpToLLVMPatterns(typeConverter, targetInfo, patterns,
-                                           numWarps, axisInfoAnalysis,
-                                           AMDBenefit);
+                                           axisInfoAnalysis, AMDBenefit);
     populatePatterns7(mlir::triton::populateReduceOpToLLVMPatterns,
                       commonBenefit);
     populatePatterns7(mlir::triton::populateScanOpToLLVMPatterns,
@@ -195,12 +187,10 @@ struct ConvertTritonAMDGPUToLLVM
     populatePatterns7(mlir::triton::populateGatherOpToLLVMPatterns,
                       commonBenefit);
 
-    mlir::triton::BackendCallbacks callbacks;
-    callbacks.localStoreOpConversion = storeOpConversionCallback;
-
-    AMD::populateMemoryOpToLLVMPatterns(typeConverter, patterns, AMDBenefit);
-    mlir::triton::populateMemoryOpToLLVMPatterns(
-        typeConverter, targetInfo, patterns, commonBenefit, callbacks);
+    AMD::populateMemoryOpToLLVMPatterns(typeConverter, patterns, targetInfo,
+                                        AMDBenefit);
+    mlir::triton::populateMemoryOpToLLVMPatterns(typeConverter, targetInfo,
+                                                 patterns, commonBenefit);
     mlir::triton::populateMakeRangeOpToLLVMPattern(typeConverter, targetInfo,
                                                    patterns, commonBenefit);
     mlir::triton::populateAssertOpToLLVMPattern(typeConverter, patterns,
@@ -222,9 +212,16 @@ struct ConvertTritonAMDGPUToLLVM
     mlir::arith::populateArithToLLVMConversionPatterns(typeConverter, patterns);
     mlir::populateMathToLLVMConversionPatterns(typeConverter, patterns);
 
+    FailureOr<mlir::amdgpu::Chipset> maybeChipset =
+        mlir::amdgpu::Chipset::parse(this->arch);
+    if (failed(maybeChipset)) {
+      emitError(UnknownLoc::get(&getContext()),
+                "Invalid AMDGPU chipset name: " + this->arch);
+      return signalPassFailure();
+    }
     // Native lowering patterns
-    mlir::populateGpuToROCDLConversionPatterns(typeConverter, patterns,
-                                               mlir::gpu::amd::HIP);
+    mlir::populateGpuToROCDLConversionPatterns(
+        typeConverter, patterns, mlir::gpu::amd::HIP, *maybeChipset);
 
     mlir::cf::populateControlFlowToLLVMConversionPatterns(typeConverter,
                                                           patterns);
