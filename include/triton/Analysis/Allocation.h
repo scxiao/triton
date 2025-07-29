@@ -7,10 +7,6 @@
 #include "llvm/ADT/SetVector.h"
 #include "llvm/Support/raw_ostream.h"
 
-#include "triton/Dialect/Triton/IR/Dialect.h"
-#include "triton/Dialect/TritonGPU/IR/Dialect.h"
-#include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
-#include <atomic>
 #include <limits>
 
 namespace mlir {
@@ -67,6 +63,11 @@ getScratchCvtInOutVecLengths(RankedTensorType srcTy, RankedTensorType dstTy);
 ScratchConfig getScratchConfigForCvt(RankedTensorType srcTy,
                                      RankedTensorType dstTy);
 
+unsigned getNumScratchElemsSwizzledCvt(RankedTensorType srcTy,
+                                       RankedTensorType dstTy);
+
+unsigned getNumScratchElemsPaddedCvt(RankedTensorType srcTy,
+                                     RankedTensorType dstTy);
 } // namespace triton
 
 /// Modified from llvm-15.0: llvm/ADT/AddressRanges.h

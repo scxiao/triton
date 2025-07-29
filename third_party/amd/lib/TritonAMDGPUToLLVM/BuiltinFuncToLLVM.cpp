@@ -1,5 +1,6 @@
 #include "TritonAMDGPUToLLVM/Passes.h"
 
+#include "AsyncUtility.h"
 #include "Utility.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Pass/Pass.h"
@@ -18,7 +19,7 @@ namespace {
 class CallOpConversion : public OpRewritePattern<LLVM::CallOp> {
 public:
   CallOpConversion(mlir::MLIRContext *context, bool ftz)
-      : OpRewritePattern<LLVM::CallOp>(context, 1), ftz(ftz) {}
+      : OpRewritePattern(context, 1), ftz(ftz) {}
 
   LogicalResult
   matchAndRewrite(LLVM::CallOp callOp,
@@ -75,8 +76,20 @@ private:
     //               | 1         | 0/1     | (wt) global store sc0 sc1
     auto [volatileFlag, nonTmpFlag] =
         mlir::LLVM::AMD::getCacheModifierFlagsForPredicatedCall(callOp);
-    auto storeOp = rewriter.create<LLVM::StoreOp>(
-        loc, val, ptr, /*alignment=*/0, volatileFlag, nonTmpFlag);
+    int alignment = 0;
+    if (auto vecTy = dyn_cast<VectorType>(val.getType())) {
+      auto elemTy = vecTy.getElementType();
+      auto elemSizeInBytes = elemTy.getIntOrFloatBitWidth() / 8;
+      alignment = elemSizeInBytes * vecTy.getNumElements();
+    }
+
+    auto storeOp = rewriter.create<LLVM::StoreOp>(loc, val, ptr, alignment,
+                                                  volatileFlag, nonTmpFlag);
+    bool addAsyncAliasScopes =
+        callOp.getCallee().value().contains(mlir::LLVM::AMD::noAliasAsyncLoads);
+    if (addAsyncAliasScopes) {
+      AMD::addLocalLoadNoAliasScope(storeOp);
+    }
     rewriter.create<LLVM::BrOp>(loc, afterStore);
     rewriter.setInsertionPointToStart(afterStore);
     rewriter.eraseOp(callOp);
@@ -112,6 +125,11 @@ private:
         mlir::LLVM::AMD::getCacheModifierFlagsForPredicatedCall(callOp);
     auto loadOp = rewriter.create<LLVM::LoadOp>(
         loc, elemTy, ptr, /*alignment=*/0, volatileFlag, nonTmpFlag);
+    bool addAsyncNoAliasInfo =
+        callOp.getCallee().value().contains(mlir::LLVM::AMD::noAliasAsyncLoads);
+    if (addAsyncNoAliasInfo) {
+      AMD::addLocalLoadNoAliasScope(loadOp);
+    }
     rewriter.create<LLVM::BrOp>(loc, loadOp->getResult(0), afterLoad);
     rewriter.setInsertionPointToStart(falseBlock);
     rewriter.create<LLVM::BrOp>(loc, falseVal, afterLoad);
@@ -194,7 +212,7 @@ struct ConvertBuiltinFuncToLLVM
     ModuleOp mod = getOperation();
 
     GreedyRewriteConfig config;
-    config.enableRegionSimplification = GreedySimplifyRegionLevel::Aggressive;
+    config.setRegionSimplificationLevel(GreedySimplifyRegionLevel::Aggressive);
 
     RewritePatternSet patterns(context);
     patterns.add<CallOpConversion>(context, this->ftz);

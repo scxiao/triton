@@ -1,4 +1,4 @@
-// RUN: triton-opt %s -split-input-file -tritongpu-pipeline=num-stages=3 -canonicalize | FileCheck %s
+// RUN: triton-opt %s -split-input-file -tritongpu-assign-latencies -tritongpu-schedule-loops -tritongpu-pipeline -canonicalize | FileCheck %s
 
 #blocked = #ttg.blocked<{sizePerThread = [8, 1], threadsPerWarp = [8, 4], warpsPerCTA = [1, 4], order = [0, 1]}>
 #blocked1 = #ttg.blocked<{sizePerThread = [1, 8], threadsPerWarp = [4, 8], warpsPerCTA = [4, 1], order = [1, 0]}>
@@ -173,7 +173,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32} {
 //   CHECK-LABEL: @matmul_tma
 //     CHECK-DAG:   ttg.local_alloc : () -> !ttg.memdesc<3x128x64xf16, #{{.+}}, #smem, mutable>
 //     CHECK-DAG:   ttg.local_alloc : () -> !ttg.memdesc<3x64x256xf16, #{{.+}}, #smem, mutable>
-//     CHECK-DAG:   ttg.local_alloc : () -> !ttg.memdesc<3xi64, #{{.+}}, #smem, mutable>
+//     CHECK-DAG:   ttg.local_alloc : () -> !ttg.memdesc<3x1xi64, #{{.+}}, #smem, mutable>
 // CHECK-COUNT-3:   ttng.init_barrier
 // CHECK-COUNT-4:   ttng.async_tma_copy_global_to_local
 //         CHECK:   scf.for
