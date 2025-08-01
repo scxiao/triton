@@ -1053,14 +1053,19 @@ int getNVIDIAComputeCapability(Operation *module) {
   return computeCapability;
 }
 
-StringRef getAMDArch(Operation *module) {
+std::optional<StringRef> getAMDArch(Operation *module) {
   StringAttr targetAttr =
       module->getAttrOfType<StringAttr>(triton::gpu::AttrTargetName);
-  assert(targetAttr && "Expected a target attribute on the module operation");
+  if (!targetAttr) {
+    LDBG("Expected a target attribute on the module operation");
+    return {};
+  }
 
   StringRef ref = targetAttr.strref();
-  assert(ref.starts_with("hip:") &&
-         "expected target attribute to be prefixed with \"hip:\"");
+  if (!ref.starts_with("hip:")) {
+    LDBG("expected target attribute to be prefixed with \"hip:\"");
+    return {};
+  }
 
   return ref.drop_front(4); // drop the "hip:"
 }
@@ -1526,9 +1531,10 @@ void replaceUsesAndPropagateType(OpBuilder &builder, Operation *oldUse,
     op->erase();
 }
 
-void replaceUsesWithLocalLoad(OpBuilder &builder, OpResult old,
-                              TypedValue<ttg::MemDescType> alloc,
-                              TypedValue<ttg::AsyncTokenType> token) {
+ttg::LocalLoadOp
+replaceUsesWithLocalLoad(OpBuilder &builder, OpResult old,
+                         TypedValue<ttg::MemDescType> alloc,
+                         TypedValue<ttg::AsyncTokenType> token) {
   //  Remove redundant local_load -> local_alloc
   auto allocTy = alloc.getType();
   SmallVector<ttg::LocalAllocOp> allocsToErase;
@@ -1543,16 +1549,18 @@ void replaceUsesWithLocalLoad(OpBuilder &builder, OpResult old,
 
   // If there are some uses that were not local_allocs, we need to create a
   // local_load for them.
+  ttg::LocalLoadOp maybeLocalLoad;
   if (std::distance(old.getUsers().begin(), old.getUsers().end()) >
       allocsToErase.size()) {
     auto loc = old.getOwner()->getLoc();
-    auto sharedLoad = builder.template create<ttg::LocalLoadOp>(
+    maybeLocalLoad = builder.template create<ttg::LocalLoadOp>(
         loc, old.getType(), alloc, token);
-    old.replaceAllUsesWith(sharedLoad.getResult());
+    old.replaceAllUsesWith(maybeLocalLoad);
   }
   for (auto alloc : allocsToErase) {
     alloc.erase();
   }
+  return maybeLocalLoad;
 }
 
 bool comesFromLoadOrBlockArg(Value v) {

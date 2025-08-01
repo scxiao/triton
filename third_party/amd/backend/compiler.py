@@ -18,8 +18,9 @@ def get_min_dot_size(target: GPUTarget):
     return lambda lhs_type, rhs_type: (1, 1, 1)
 
 
-def is_pingpong_schedule_enabled(arch):
-    return (arch == "gfx942") if knobs.amd.use_block_pingpong is None else knobs.amd.use_block_pingpong
+def is_pingpong_schedule_enabled(arch, use_async_copy):
+    return (arch == "gfx942" or (arch == "gfx950" and use_async_copy is True)
+            ) if knobs.amd.use_block_pingpong is None else knobs.amd.use_block_pingpong
 
 
 def is_in_thread_transpose_enabled(arch):
@@ -57,10 +58,6 @@ class HIPOptions:
     #
     # Current experimental scheduling variants:
     #
-    # local-prefetch: implements instruction scheduling similar to the one from the ROCm Composable
-    #                 Kernel library. Note, this variant requires the use of buffer load/store ops
-    #                 and a special software pipelining style - i.e., 1x LDS and 1x register
-    #                 prefetch buffers for each GEMM tile.
     # attention: enables a bunch of optimizations for attention kernels, including:
     #            - iglp 2 and sched.barrier around it
     #            - sink-insts-to-avoid-spills flag to avoid register spills
@@ -237,12 +234,10 @@ class HIPBackend(BaseBackend):
         global_prefetch = knobs.amd.global_prefetch
         local_prefetch = knobs.amd.local_prefetch
         use_async_copy = knobs.amd.use_async_copy
+        use_block_pingpong = is_pingpong_schedule_enabled(options.arch, use_async_copy)
 
-        # The `local-prefetch` scheduling variant requires turning on buffer ops.
-        if options.schedule_hint == "local-prefetch":
-            global_prefetch = local_prefetch = 1
-
-        amd.passes.ttgpuir.add_stream_pipeline(pm, options.num_stages, global_prefetch, local_prefetch, use_async_copy)
+        amd.passes.ttgpuir.add_stream_pipeline(pm, options.num_stages, global_prefetch, local_prefetch, use_async_copy,
+                                               use_block_pingpong)
         if use_async_copy:
             amd.passes.ttgpuir.add_coalesce_async_copy(pm, options.arch)
         passes.common.add_canonicalizer(pm)
@@ -255,8 +250,7 @@ class HIPBackend(BaseBackend):
             amd.passes.ttgpuir.add_in_thread_transpose(pm)
             passes.ttgpuir.add_remove_layout_conversions(pm)
         amd.passes.ttgpuir.add_reorder_instructions(pm)
-        use_block_pingpong = is_pingpong_schedule_enabled(options.arch)
-        if use_block_pingpong and options.num_stages == 2:
+        if use_block_pingpong and options.num_stages > 1:
             amd.passes.ttgpuir.add_block_pingpong(pm, options.num_stages)
 
         if knobs.amd.use_buffer_ops:
