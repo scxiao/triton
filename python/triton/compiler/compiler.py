@@ -260,9 +260,11 @@ def compile(src, target=None, options=None, _env_vars=None):
     metadata_group = fn_cache_manager.get_group(metadata_filename) or {}
     metadata_path = metadata_group.get(metadata_filename)
     always_compile = knobs.compilation.always_compile
+    print(f"file_name = {file_name}, metadata_filename = {metadata_filename}")
     print(f"always_compile = {always_compile}")
     print(f"metadata_path = {metadata_path}")
     if not always_compile and metadata_path is not None:
+        print(f"Cache hit ------------------------")
         # cache hit!
         res = CompiledKernel(src, metadata_group, hash)
         if compilation_listener:
@@ -274,6 +276,8 @@ def compile(src, target=None, options=None, _env_vars=None):
                 cache_hit=True,
             )
         return res
+
+    print(f"Recompile kernel ------------------------")
 
     # initialize metadata
     metadata = {
