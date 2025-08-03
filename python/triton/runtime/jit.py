@@ -589,6 +589,7 @@ class JITFunction(KernelInterface[T]):
 
         # compute cache key
         key = str(specialization) + str(options)
+        # print(f"loc1, key = {key}")
         kernel = kernel_cache.get(key, None)
 
         # Kernel is not cached; we have to compile.
@@ -758,17 +759,18 @@ class JITFunction(KernelInterface[T]):
 
     def _do_compile(self, key, signature, device, constexprs, options, attrs, warmup):
         kernel_cache, target, backend, _ = self.device_caches[device]
-
+        print(f"do_copmile, before _call_hook <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<")
         if self._call_hook(knobs.runtime.jit_cache_hook, key, signature, device, constexprs, options, [attrs], warmup):
             return None
+        print(f"do_copmile, after _call_hook -------------------------------")
         src = self.ASTSource(self, signature, constexprs, attrs)
-
+        print(f"src = {src}")
         async_mode = _async_compile.active_mode.get()
         if async_mode is not None:
 
             env_vars = get_cache_invalidating_env_vars()
             cache_key = get_cache_key(src, backend, options, env_vars)
-
+            print(f"cache_key = {cache_key}")
             def async_compile():
                 return self.compile(src, target=target, options=options.__dict__, _env_vars=env_vars)
 
@@ -779,7 +781,9 @@ class JITFunction(KernelInterface[T]):
 
             kernel = async_mode.submit(cache_key, async_compile, finalize_compile)
         else:
+            print(f"before self.compile")
             kernel = self.compile(src, target=target, options=options.__dict__)
+            print(f"after self.compile")
             kernel_cache[key] = kernel
             self._call_hook(knobs.runtime.jit_post_compile_hook, key, signature, device, constexprs, options, [attrs],
                             warmup)
