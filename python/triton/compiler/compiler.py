@@ -246,10 +246,17 @@ def compile(src, target=None, options=None):
     metadata_group = fn_cache_manager.get_group(metadata_filename) or {}
     metadata_path = metadata_group.get(metadata_filename)
     always_compile = os.environ.get("TRITON_ALWAYS_COMPILE", "0") == "1"
+    print(f"file_name = {file_name}, metadata_filename = {metadata_filename}")
+    print(f"always_compile = {always_compile}")
+    print(f"metadata_path = {metadata_path}")    
     if not always_compile and metadata_path is not None:
+        print(f"Cache hit, NOT COMPILE KERNEL ------------------------")
         # cache hit!
         return CompiledKernel(src, metadata_group, hash)
     # initialize metadata
+
+    print(f"COMPILE kernel ------------------------")
+
     metadata = {
         "hash": hash,
         "target": target,

@@ -562,11 +562,15 @@ class JITFunction(KernelInterface[T]):
             attrvals = [x[1] for x in specialization]
             attrs = find_paths_if(attrvals, lambda _, x: isinstance(x, str))
             attrs = {k: backend.parse_attr(get_iterable_path(attrvals, k)) for k in attrs}
+            print(f"do_copmile, before _call_hook <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<")
             if self._call_hook(key, signature, device, constexprs, options, [attrs], warmup, before=True):
                 return None
             # compile the kernel
             src = self.ASTSource(self, signature, constexprs, attrs)
+            print(f"src = {src}")
+            print(f"before self.compile")
             kernel = self.compile(src, target=target, options=options.__dict__)
+            print(f"after self.compile")
             kernel_cache[key] = kernel
             self._call_hook(key, signature, device, constexprs, options, [attrs], warmup, before=False)
 
