@@ -5,14 +5,8 @@ import triton.language as tl
 
 from triton.experimental import gluon
 from triton.experimental.gluon import language as ttgl
-from triton.experimental.gluon.language.nvidia import blackwell
-from triton.experimental.gluon.language.nvidia import hopper
-from triton.experimental.gluon.language.nvidia.blackwell import mbarrier, tma, TensorMemoryLayout, async_copy
-from triton.experimental.gluon.nvidia.hopper import TensorDescriptor
 from triton._filecheck import filecheck_test, run_parser
 import triton.language as tl
-from triton._internal_testing import is_cuda, is_ampere_or_newer, is_blackwell, is_hopper, is_hopper_or_newer
-from triton.compiler.errors import CompilationError, CompileTimeAssertionFailure
 
 
 @gluon.jit
@@ -29,7 +23,7 @@ def dot_kernel_v1(a_ptr, b_ptr, c_ptr,
     shared: ttgl.constexpr =  ttgl.SwizzledSharedLayout(vec=8, per_phase=2, max_phase=4, order=[1, 0])
     #type of c, ret_ty is set https://github.com/zwu-2025/triton/blob/main/python/triton/language/semantic.py#L1543 with blocked_type
     #so we use blocked_type in here to pass the type validation in the frontend.
-    mfma_layout: ttgl.constexpr = ttgl.amd.AMDMFMALayout(version=4, instr_shape=[32, 32], transposed=True, warps_per_cta=[2, 2],
+    mfma_layout: ttgl.constexpr = ttgl.amd.AMDMFMALayout(version=3, instr_shape=[32, 32], transposed=True, warps_per_cta=[2, 2],
        tiles_per_warp=[2, 2], #not used
        ctas_per_cga=[1, 1], cta_split_num=[1, 1], cta_order=[1, 0]
                                                          )
@@ -106,10 +100,13 @@ def dot_kernel_v1(a_ptr, b_ptr, c_ptr,
 def dot(a, b):
     M, K = a.shape
     _, N = b.shape
-    c = torch.empty((M, N), device=a.device, dtype=torch.float32)
+    c = torch.empty((M, N), device=a.device, dtype=a.dtype)
 
-    # dot_kernel[1, ](a, b, c,
-    dot_kernel_v1[1, ](a, b, c,
+    block_m = 64
+    block_n = 64
+    grid = (triton.cdiv(M, block_m) * triton.cdiv(N, block_n), )
+
+    dot_kernel_v1[grid](a, b, c,
         M, N, K,  #
         a.stride(0), a.stride(1),  #
         b.stride(0), b.stride(1),  #
@@ -124,19 +121,18 @@ def dot(a, b):
 def dot_torch(a, b):
     return torch.matmul(a, b)
 
-# M = 64#128
-# N = 64#128
-# K = 64
-
-M = 64
-N = 64
+M = 160
+N = 130
 K = 128
 
-a = torch.randn((M, K), device='cuda', dtype=torch.float32)
-b = torch.randn((K, N), device='cuda', dtype=torch.float32)
+data_type = torch.float16
+
+a = torch.randn((M, K), device='cuda', dtype=data_type)
+b = torch.randn((K, N), device='cuda', dtype=data_type)
 
 tri = dot(a, b)
 ref = dot_torch(a, b)
-torch.testing.assert_close(tri.to(torch.float32), ref.to(torch.float32))
+# torch.testing.assert_close(tri.to(torch.float32), ref.to(torch.float32))
+torch.testing.assert_close(tri, ref)
 print(f'✅Pass')
 
