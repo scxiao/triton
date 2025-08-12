@@ -164,9 +164,13 @@ def dot(a, b):
 def dot_torch(a, b):
     return torch.matmul(a, b)
 
-M = 64#128
-N = 64#128
-K = 64
+# M = 64#128
+# N = 64#128
+# K = 64
+
+M = 64
+N = 64
+K = 128
 
 a = torch.randn((M, K), device='cuda', dtype=torch.float32)
 b = torch.randn((K, N), device='cuda', dtype=torch.float32)
