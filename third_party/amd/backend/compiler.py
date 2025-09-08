@@ -289,6 +289,16 @@ class HIPBackend(BaseBackend):
         passes.gluon.add_canonicalizer(pm)
         passes.ttgpuir.add_combine_tensor_select_and_if(pm)
 
+        passes.ttgpuir.add_coalesce(pm)
+        passes.ttgpuir.add_optimize_thread_locality(pm)
+        # if not knobs.amd.disable_remove_layout:
+        # print("apply remove layout")
+        passes.ttgpuir.add_remove_layout_conversions(pm)
+        passes.ttgpuir.add_reduce_data_duplication(pm)
+
+        passes.common.add_sccp(pm)
+        passes.gluon.add_canonicalizer(pm)
+
         pm.run(mod)
 
         # It there're multiple kernels and you only want to replace one of them, you can use 

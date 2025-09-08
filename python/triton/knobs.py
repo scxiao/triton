@@ -500,7 +500,7 @@ class amd_knobs(base_knobs):
     local_prefetch: env_int = env_int("TRITON_HIP_LOCAL_PREFETCH")
     use_async_copy: env_bool = env_bool("TRITON_HIP_USE_ASYNC_COPY")
     scalarize_packed_fops: env_bool = env_bool("AMDGCN_SCALARIZE_PACKED_FOPS")
-
+    disable_remove_layout: env_bool = env_bool("AMDGCN_REMOVE_LAYOUT")
 
 class proton_knobs(base_knobs):
     cupti_dir: env_opt_str = env_opt_str("TRITON_CUPTI_LIB_PATH")

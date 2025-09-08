@@ -181,8 +181,11 @@ void LayoutRematerialization::cleanup() {
 // Return true if the op is an op with a layout we don't want to change. We will
 // propagate the layout starting from anchor ops.
 bool isLayoutAnchor(Operation *op) {
-  if (isa<LoadOp, StoreOp>(op))
+  // llvm::outs() << "op = " << *op << "\n";
+  if (isa<LoadOp, StoreOp>(op)) {
+    // llvm::outs() << "isLoadStore, isExpensive = " << isExpensiveLoadOrStore(op) << "\n";
     return isExpensiveLoadOrStore(op);
+  }
   if (isa<DotOp, DotScaledOp, nvidia_gpu::WarpGroupDotOp, AtomicRMWOp,
           AtomicCASOp, triton::nvidia_gpu::TMEMLoadOp>(op))
     return true;

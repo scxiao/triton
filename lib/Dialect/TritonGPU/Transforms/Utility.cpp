@@ -599,8 +599,10 @@ bool isExpensiveLoadOrStore(Operation *op) {
   auto mod = op->getParentOfType<ModuleOp>();
   int numWarps = triton::gpu::lookupNumWarps(op);
   int threadsPerWarp = triton::gpu::TritonGPUDialect::getThreadsPerWarp(mod);
-  if (ptrType.getNumElements() < numWarps * threadsPerWarp)
+  if (ptrType.getNumElements() < numWarps * threadsPerWarp / 8) {
+    // llvm::outs() << "getNumElems = " << ptrType.getNumElements() << ", totalElem = " << numWarps * threadsPerWarp << "\n";
     return false;
+  }
   return true;
 }
 
