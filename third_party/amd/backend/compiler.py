@@ -432,6 +432,7 @@ class HIPBackend(BaseBackend):
             with open(insert_module_path, "r") as file:
                 file_content = file.readlines()
             amdgcn = ''.join(file_content)
+            print(f"replace kernel with {insert_module_path}")
 
         if knobs.amd.dump_amdgcn:
             print("// -----// AMDGCN Dump //----- //")
