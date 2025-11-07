@@ -41,6 +41,8 @@ struct MemDescOperand {
 class DotOpMmaMemLoader {
 public:
   virtual ~DotOpMmaMemLoader() = default;
+  // Given the starting coordinates of the logical tensor (i.e. reps *
+  // ctaTileSize), return the associated memory descriptor for SMEM / TMEM.
   virtual MemDescOperand memLoad(int a, int b,
                                  ConversionPatternRewriter &rewriter,
                                  Location loc) const = 0;
@@ -50,17 +52,14 @@ class DotOpMmaSmemLoader : public DotOpMmaMemLoader {
 public:
   DotOpMmaSmemLoader() = default;
 
-  DotOpMmaSmemLoader(MMASMEMDescriptor desc, Value baseb128, LinearLayout llInv,
-                     ArrayRef<unsigned> instrShape)
-      : desc(desc), baseb128(baseb128), ll(std::move(llInv)),
-        instrShape(instrShape) {}
+  DotOpMmaSmemLoader(MMASMEMDescriptor desc, Value baseb128, LinearLayout llInv)
+      : desc(desc), baseb128(baseb128), ll(std::move(llInv)) {}
 
   static DotOpMmaSmemLoader
   build(Location loc, RewriterBase &rewriter, gpu::MemDescType memTy,
-        Value smemBase, ArrayRef<unsigned> instrShape, int mmaVersion,
-        bool isFp4 = false,
-        std::optional<RankedTensorType> mmaTy = std::nullopt,
-        std::optional<unsigned> MNdim = std::nullopt) {
+        Value smemBase, ArrayRef<unsigned> instrShape, unsigned MNdim,
+        int mmaVersion, bool isFp4 = false,
+        std::optional<RankedTensorType> mmaTy = std::nullopt) {
     auto ctx = rewriter.getContext();
     auto kOffset = str_attr("offset");
     // The handling of subviews is not as fine as it could be
@@ -79,15 +78,15 @@ public:
       bitwidth /= 2;
       // The instr_shape comes in number of elements already
     }
-    return build(loc, rewriter, llInv, bitwidth, smemBase, instrShape,
-                 mmaVersion, mmaTy, MNdim);
+    return build(loc, rewriter, llInv, bitwidth, smemBase, instrShape, MNdim,
+                 mmaVersion, mmaTy);
   }
 
   static DotOpMmaSmemLoader
   build(Location loc, RewriterBase &rewriter, const LinearLayout &ll,
         int bitwidth, Value smemBase, ArrayRef<unsigned> instrShapeArray,
-        int mmaVersion, std::optional<RankedTensorType> mmaTy = std::nullopt,
-        std::optional<unsigned> MNdim = std::nullopt) {
+        unsigned MNdim, int mmaVersion,
+        std::optional<RankedTensorType> mmaTy = std::nullopt) {
     // ll is a map from two dimensions (dim0, dim1) or (row, col) into offsets
     // and blocks
     auto ctx = rewriter.getContext();
@@ -99,10 +98,7 @@ public:
     assert(mmaVersion == 3 || mmaVersion == 5);
     // Just needed for MMAv3
     assert(mmaTy.has_value() == (mmaVersion == 3));
-    assert(MNdim.has_value() == (mmaVersion == 3));
-    if (mmaVersion == 3) {
-      assert(MNdim.value() < 2);
-    }
+    assert(MNdim < 2);
     auto instrShape = to_vector(instrShapeArray);
     assert(instrShape.size() == 2);
     auto b = TritonLLVMOpBuilder(loc, rewriter);
@@ -114,13 +110,12 @@ public:
     Value baseSrcb128 = b.lshr(smemBase, b.i32_val(4));
 
     if (mmaVersion == 3) {
-      auto mndim = MNdim.value();
       auto mmaLl = gpu::toLinearLayout(mmaTy.value());
       auto outDims = to_vector(mmaLl.getOutDimNames());
       auto kWarp = str_attr("warp");
       // Map from warps into the MN dimension
-      auto mmaWarps = mmaLl.sublayout({kWarp}, {outDims[mndim]}) *
-                      LinearLayout::identity1D(1, kWarp, outDims[1 - mndim]);
+      auto mmaWarps = mmaLl.sublayout({kWarp}, {outDims[MNdim]}) *
+                      LinearLayout::identity1D(1, kWarp, outDims[1 - MNdim]);
       // Map from warps to offsets in bitwidth elements
       auto warpToOffset = mmaWarps.compose(ll);
       // Map from warps to offsets in 128b elements
@@ -135,21 +130,12 @@ public:
       bases[kWarp][1] = {0, 0};
       auto warpGroupToOffsetb128 = LinearLayout(
           bases, warpToOffset.getOutDims(), /*requireSurjective=*/false);
-      Value warpId = rewriter.create<nvgpu::WarpIdOp>(loc);
+      Value warpId = nvgpu::WarpIdOp::create(rewriter, loc);
       Value warpStrideb128 =
           applyLinearLayout(loc, rewriter, warpGroupToOffsetb128,
                             {{kWarp, warpId}})[0]
               .second;
       baseSrcb128 = b.add(baseSrcb128, warpStrideb128);
-      // Increase the instruction shape to describe the size at a block level
-      // as the input just describes it at a warp level
-      int logwgAlongMN = 0;
-      for (int i = 0; i < warpGroupToOffsetb128.getInDimSizeLog2(kWarp); i++) {
-        if (warpGroupToOffsetb128.getBasis(kWarp, i, kOffset) != 0) {
-          logwgAlongMN++;
-        }
-      }
-      instrShape[mndim] *= (1 << logwgAlongMN);
     }
 
     for (auto [dim, instrSize] : llvm::zip(ll.getInDimNames(), instrShape)) {
@@ -157,10 +143,10 @@ public:
              "Instruction shape is too large for the layout");
     }
 
-    auto desc = getDescriptor(ll, instrShape, bitwidth, mmaVersion);
+    auto desc = getDescriptor(ll, instrShape, bitwidth, MNdim, mmaVersion);
 
     Value baseb128 = b.zext(i64_ty, b.and_(baseSrcb128, b.i32_val(0x3FFF)));
-    return {desc, baseb128, ll, instrShape};
+    return {desc, baseb128, ll};
   }
 
   Value smemLoad(int a, int b, ConversionPatternRewriter &rewriter,
@@ -168,14 +154,10 @@ public:
     auto *ctx = loc.getContext();
     auto tb = TritonLLVMOpBuilder(loc, rewriter);
     auto dims = to_vector(ll.getInDimNames());
-    assert((a + 1) * instrShape[0] <= ll.getInDimSize(dims[0]));
-    assert((b + 1) * instrShape[1] <= ll.getInDimSize(dims[1]));
     assert(to_vector(ll.getOutDimNames()) ==
            llvm::to_vector(
                ArrayRef<StringAttr>{str_attr("offset"), str_attr("block")}));
-    int32_t totalOffElems = ll.apply({{dims[0], a * instrShape[0]},
-                                      {dims[1], b * instrShape[1]}})[0]
-                                .second;
+    int32_t totalOffElems = ll.apply({{dims[0], a}, {dims[1], b}})[0].second;
     int32_t smemByteOffsetb8 = totalOffElems * desc.bitwidth / 8;
     auto currDesc = desc.descriptor;
     // Take the next 0/1/2/3 bits after the 128b tile
@@ -199,11 +181,11 @@ private:
   MMASMEMDescriptor desc;
   Value baseb128;
   LinearLayout ll;
-  SmallVector<unsigned> instrShape;
 
   static MMASMEMDescriptor getDescriptor(const LinearLayout &ll,
                                          ArrayRef<unsigned> instrShape,
-                                         int bitwidth, int mmaVersion) {
+                                         int bitwidth, unsigned MNdim,
+                                         int mmaVersion) {
     // ll is a map from allocShape into offsets and blocks
     auto dims = to_vector(ll.getInDimNames());
     auto ctx = dims[0].getContext();
@@ -251,21 +233,16 @@ private:
           // Pseudoinvert as fp4 may have padding
           auto shmemTileInv = shmemTile.pseudoinvert();
 
-          // The PTX docs are wrong in a number of ways:
-          // 1) LBO can be specified for !transposed && swizzled != 0
+          // The PTX docs are wrong in subtle ways:
+          // 1) LBO can be specified for kContig && swizzled != 0
           //    PTX says it's assumed to be 1, but  we can in fact use it
-          // 2) LBO / SBO are swapped also for !transposed && swizzled == 0
-          //    PTX just reports this for the transposed case
-          //    EVEN MORE the computation we do here is conceptually correct
-          //    and it agrees with the tensor descriptors for wgmma or
-          //    tcgen05.mma but not for tcgen05.cp! tcgen05.cp follows the PTX
-          //    docs!
+          // 2) The Cute layouts for kContig && swizzled != 0 are wrong
           int lbo = 0, sbo = 0;
           int leadingDim = transposed ? 0 : 1;
           int stridedDim = transposed ? 1 : 0;
-          // The lbo / sbo is defined wrt. the 128 tile, so this makes their
-          // definition change for swizzling == 0 lol
-          if (swizzling == 0) {
+          // The lbo / sbo is swapped for swizzling == 0 and MNContig lol
+          bool MNContig = (MNdim == 0) == transposed;
+          if (swizzling == 0 && MNContig) {
             std::swap(leadingDim, stridedDim);
           }
           auto log2RowsTile = shmemTileInv.getInDimSizeLog2(dims[leadingDim]);
@@ -329,11 +306,11 @@ private:
             default:
               llvm_unreachable("Unsupported swizzling size.");
             }
-            return {.descriptor = desc,
-                    .swizzlingByteWidth = swizzling,
-                    .bitwidth = bitwidth,
-                    .transposed = transposed,
-                    .fp4Padded = fp4Padded};
+            return {/* .descriptor = */ desc,
+                    /* .swizzlingByteWidth = */ swizzling,
+                    /* .bitwidth = */ bitwidth,
+                    /* .transposed = */ transposed,
+                    /* .fp4Padded = */ fp4Padded};
           }
         }
       }
@@ -346,9 +323,9 @@ private:
 class DotOpMmaV5TmemLoader : public DotOpMmaMemLoader {
 public:
   DotOpMmaV5TmemLoader() {}
-  DotOpMmaV5TmemLoader(Value tensor, Value base,
-                       SmallVector<unsigned int> instrShape, bool interleaved,
-                       bool trans);
+  static DotOpMmaV5TmemLoader build(Location loc, RewriterBase &rewriter,
+                                    gpu::MemDescType memTy, Value tmemBase);
+
   MemDescOperand tmemLoad(int a, int b, ConversionPatternRewriter &rewriter,
                           Location loc) const;
 
@@ -358,14 +335,12 @@ public:
   }
 
 private:
-  Value base;
-  bool trans;
-  bool interleaved;
-  bool unpacked;
-  SmallVector<unsigned int> instrShape;
-  int numElementsPer32b;
-  int numRepM;
-  int numSlicePerBlockN;
+  DotOpMmaV5TmemLoader(LinearLayout ll, Value address, int bitwidth)
+      : ll(std::move(ll)), address(address), bitwidth(bitwidth) {}
+
+  LinearLayout ll;
+  Value address;
+  int bitwidth;
 };
 
 static Value getOffsetedBase(Value v, gpu::MemDescType memDescTy,
