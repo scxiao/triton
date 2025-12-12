@@ -445,6 +445,11 @@ class HIPBackend(BaseBackend):
         if knobs.compilation.enable_asan:
             target_features = '+xnack'
         hsaco = amd.assemble_amdgcn(src, options.arch, target_features)
+        if "AMD_DUMP_HSACO_PATH" in os.environ.keys():
+            hsaco_path = str(os.environ["AMD_DUMP_HSACO_PATH"])
+            with open(hsaco_path, "wb") as fd_tmp_hasco:
+                fd_tmp_hasco.write(hsaco)
+
         with tempfile.NamedTemporaryFile() as tmp_out:
             with tempfile.NamedTemporaryFile() as tmp_in:
                 with open(tmp_in.name, "wb") as fd_in:
