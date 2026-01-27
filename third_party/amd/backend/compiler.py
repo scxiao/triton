@@ -167,7 +167,7 @@ class HIPBackend(BaseBackend):
     @staticmethod
     def is_within_2gb(arg):
         import torch
-        # return False
+        return False
         MAX_INT_32 = 2**31 - 1
         if hasattr(arg, "ptr_range"):
             return arg.ptr_range() <= MAX_INT_32
