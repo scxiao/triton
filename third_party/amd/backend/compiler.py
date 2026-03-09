@@ -501,13 +501,35 @@ class HIPBackend(BaseBackend):
                             dump_file_id)
         if knobs.amd.swap_mir_enable_misched and not knobs.amd.swap_mir:
             raise ValueError("TRITON_SWAP_MIR_ENABLE_MISCHED requires TRITON_SWAP_MIR to be set")
+        print("make_amdgcn, loc1")
         if knobs.amd.swap_mir:
+            print("make_amdgcn, loc2")
             amdgcn = llvm.translate_mir_to_asm(os.path.join(knobs.amd.swap_mir, dump_file_id + '.txt'),
                                                amd.TARGET_TRIPLE, options.arch, features, flags,
                                                options.enable_fp_fusion, False, knobs.amd.swap_mir_enable_misched)
         else:
+            print("make_amdgcn, loc3")
             amdgcn = llvm.translate_to_asm(src, amd.TARGET_TRIPLE, options.arch, features, flags,
                                            options.enable_fp_fusion, False)
+
+        if "AMD_INSERT_AMDGCN" in os.environ.keys():
+            insert_amdgcn = str(os.environ["AMD_INSERT_AMDGCN"])
+            if ':' in insert_amdgcn:
+                kernel_name, insert_module_path = insert_amdgcn.split(':')
+                print(f"Replace kernel {kernel_name}'s amdgcn with {insert_module_path}")
+                if kernel_name not in amdgcn:
+                    return amdgcn
+            else:
+                insert_module_path = insert_amdgcn
+                print(f"Replace kernel's ttgir with {insert_module_path}")
+
+            if not os.path.exists(insert_module_path):
+                raise RuntimeError(f'cannot find amdgcn file to insert. Given: `{insert_module_path}`')
+
+            with open(insert_module_path, "r") as file:
+                file_content = file.readlines()
+            amdgcn = ''.join(file_content)
+
         if knobs.amd.dump_amdgcn:
             print("// -----// AMDGCN Dump //----- //")
             print(amdgcn)
