@@ -106,6 +106,133 @@ class swizzled_shared_layout_encoding(shared_layout_encoding):
         )
 
 
+class padded_shared_layout_encoding(shared_layout_encoding):
+    """
+    Shared memory layout encoding that avoids bank conflicts via padding
+    instead of swizzling. Inserts `pad` padding elements after every `interval`
+    logical elements, optionally at multiple granularities.
+
+    The linear component defaults to an identity row-major mapping derived from
+    `order` and `shape`. For advanced use (custom element reordering), use
+    `make_with_linear_layout` and supply a `LinearLayout` directly.
+
+    Attributes:
+        interval_pads: List of (interval, padding) pairs. Each interval and
+            padding must be a power of two. Multiple pairs compose additively.
+        order: Dimension order (e.g. [1, 0] for row-major).
+        shape: Logical tensor shape.
+        numCTAsPerCGA, numCTASplit, numCTAOrder: CTA layout parameters.
+    """
+
+    def __init__(
+        self,
+        interval_pads,
+        order,
+        shape,
+        numCTAsPerCGA,
+        numCTASplit,
+        numCTAOrder,
+    ):
+        super().__init__()
+        self.interval_pads = interval_pads
+        self.order = order
+        self.shape = shape
+        self.numCTAsPerCGA = numCTAsPerCGA
+        self.numCTASplit = numCTASplit
+        self.numCTAOrder = numCTAOrder
+
+    @classmethod
+    def make_default(cls, interval_pads, shape):
+        """Create a padded shared layout with an identity row-major mapping.
+
+        Args:
+            interval_pads: List of (interval, padding) pairs, e.g. [(16, 4)].
+            shape: Logical tensor shape, e.g. [128, 64].
+        """
+        rank = len(shape)
+        return cls(
+            interval_pads=interval_pads,
+            order=list(reversed(range(rank))),  # row-major, e.g. [1, 0]
+            shape=list(shape),
+            numCTAsPerCGA=[1] * rank,
+            numCTASplit=[1] * rank,
+            numCTAOrder=[1] * rank,
+        )
+
+    def make_permute(self, dims):
+        permuted_order = [self.order[d] for d in dims]
+        return padded_shared_layout_encoding(
+            self.interval_pads,
+            permuted_order,
+            [self.shape[d] for d in dims],
+            self.numCTAsPerCGA,
+            self.numCTASplit,
+            self.numCTAOrder,
+        )
+
+    def to_ir(self, builder: ir.builder):
+        return builder.make_padded_shared_encoding_attr(
+            self.interval_pads,
+            self.order,
+            self.shape,
+            self.numCTAsPerCGA,
+            self.numCTASplit,
+            self.numCTAOrder,
+        )
+
+    def __str__(self):
+        pairs = ", ".join(f"{i}:+{p}" for i, p in self.interval_pads)
+        return (f"padded_shared_layout_encoding<[{pairs}], order={self.order}, "
+                f"shape={self.shape}>")
+
+    def __eq__(self, other):
+        return (type(self) is type(other) and self.interval_pads == other.interval_pads and self.order == other.order
+                and self.shape == other.shape and self.numCTAsPerCGA == other.numCTAsPerCGA
+                and self.numCTASplit == other.numCTASplit and self.numCTAOrder == other.numCTAOrder)
+
+    def __hash__(self):
+        return hash((tuple(map(tuple, self.interval_pads)), tuple(self.order), tuple(self.shape)))
+
+
+class padded_shared_layout_encoding_with_ll(shared_layout_encoding):
+    """
+    Padded shared memory layout encoding with an explicit LinearLayout for the
+    logical element remapping. Use this when the default identity mapping is
+    insufficient (e.g., strided or permuted element access patterns).
+
+    Attributes:
+        interval_pads: List of (interval, padding) pairs.
+        linear_layout: A `LinearLayout` instance mapping 1-D shared memory
+            offsets to logical n-D tensor indices.
+    """
+
+    def __init__(self, interval_pads, linear_layout):
+        super().__init__()
+        self.interval_pads = interval_pads
+        self.linear_layout = linear_layout
+
+    def make_permute(self, dims):
+        raise NotImplementedError("make_permute is not supported for padded_shared_layout_encoding_with_ll; "
+                                  "construct a new layout with the desired LinearLayout instead.")
+
+    def to_ir(self, builder: ir.builder):
+        return builder.make_padded_shared_encoding_attr_with_ll(
+            self.interval_pads,
+            self.linear_layout,
+        )
+
+    def __str__(self):
+        pairs = ", ".join(f"{i}:+{p}" for i, p in self.interval_pads)
+        return f"padded_shared_layout_encoding_with_ll<[{pairs}], {self.linear_layout}>"
+
+    def __eq__(self, other):
+        return (type(self) is type(other) and self.interval_pads == other.interval_pads
+                and self.linear_layout == other.linear_layout)
+
+    def __hash__(self):
+        return hash((tuple(map(tuple, self.interval_pads)), repr(self.linear_layout)))
+
+
 class tensor_memory_layout_encoding(shared_layout_encoding):
 
     def __init__(self, blockM, blockN, colStride, CTASplitM, CTASplitN):

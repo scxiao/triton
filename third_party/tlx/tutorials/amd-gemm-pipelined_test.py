@@ -112,7 +112,7 @@ hip_configs = [
     # triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 128, 'GROUP_SIZE_M': 4, 'NUM_STAGES': 2}
     #               | {'kpack': 1, 'matrix_instr_nonkdim': 16, 'waves_per_eu': 0}, num_warps=8),
     triton.Config({'BLOCK_SIZE_M': 256, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 2, 'NUM_STAGES': 2}
-                  | {'matrix_instr_nonkdim': 16, 'waves_per_eu': 0}, num_warps=8, num_stages=3)
+                  | {'matrix_instr_nonkdim': 16, 'waves_per_eu': 0}, num_warps=8, num_stages=2)
 ]
 
 configs = get_hip_autotune_config_full() if full_tune else hip_configs

@@ -9,6 +9,7 @@
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
+#include "triton/Tools/LinearLayout.h"
 #include "llvm/Support/Casting.h"
 
 namespace py = pybind11;
@@ -167,6 +168,30 @@ void init_triton_tlx_ir(py::module &&m) {
                  context, CTAsPerCGA, CTASplitNum, CTAOrder);
              return mlir::cast<Attribute>(ttg::SwizzledSharedEncodingAttr::get(
                  context, vectorSize, perPhase, maxPhase, order, CTALayout));
+           })
+      .def("make_padded_shared_encoding_attr",
+           [](TritonOpBuilder &self,
+              std::vector<std::pair<unsigned, unsigned>> intervalPads,
+              std::vector<unsigned> order, std::vector<int64_t> shape,
+              std::vector<unsigned> CTAsPerCGA,
+              std::vector<unsigned> CTASplitNum,
+              std::vector<unsigned> CTAOrder) {
+             assert(order.size() == CTAsPerCGA.size() && "shape mismatch");
+             assert(order.size() == CTASplitNum.size() && "shape mismatch");
+             assert(order.size() == CTAOrder.size() && "shape mismatch");
+             auto context = self.getBuilder().getContext();
+             auto CTALayout = ttg::CTALayoutAttr::get(context, CTAsPerCGA,
+                                                      CTASplitNum, CTAOrder);
+             return mlir::cast<Attribute>(ttg::PaddedSharedEncodingAttr::get(
+                 context, intervalPads, order, shape, CTALayout));
+           })
+      .def("make_padded_shared_encoding_attr_with_ll",
+           [](TritonOpBuilder &self,
+              std::vector<std::pair<unsigned, unsigned>> intervalPads,
+              mlir::triton::LinearLayout linearComponent) {
+             auto context = self.getBuilder().getContext();
+             return mlir::cast<Attribute>(ttg::PaddedSharedEncodingAttr::get(
+                 context, intervalPads, linearComponent));
            })
       .def("make_tensor_memory_encoding_attr",
            [](TritonOpBuilder &self, unsigned blockM, unsigned blockN,
