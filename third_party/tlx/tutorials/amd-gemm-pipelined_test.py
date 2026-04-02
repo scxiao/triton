@@ -15,15 +15,17 @@ def get_hip_autotune_config_full():
             'BLOCK_SIZE_M': block_m, 'BLOCK_SIZE_N': block_n, 'BLOCK_SIZE_K': block_k, 'GROUP_SIZE_M': group_size_m,
             'NUM_STAGES': num_stages
         } | {'kpack': kpack, 'matrix_instr_nonkdim': mat_dim_non_k, 'waves_per_eu': waves_per_eu}, num_warps=num_warps)
-        for block_m in [32, 64, 128, 256]
-        for block_n in [32, 64, 128, 256]
+        # for block_m in [32, 64, 128, 256]
+        # for block_n in [32, 64, 128, 256]
+        for block_m in [256]
+        for block_n in [256]
         for block_k in [32, 64, 128]
         for group_size_m in [1, 2, 4, 8]
         for waves_per_eu in [0, 2, 4]
         for num_stages in [2]
         for num_warps in [4, 8]
         for mat_dim_non_k in [16]
-        for kpack in [1, 2]
+        for kpack in [1]
     ]
     return configs
 
@@ -101,16 +103,16 @@ def prune_configs(configs, named_args, **kwargs):
 
 full_tune = False
 hip_configs = [
-    triton.Config({'BLOCK_SIZE_M': 32, 'BLOCK_SIZE_N': 32, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 2, 'NUM_STAGES': 2}
-                  | {'kpack': 2, 'matrix_instr_nonkdim': 16, 'waves_per_eu': 0}, num_warps=4),
-    triton.Config({'BLOCK_SIZE_M': 32, 'BLOCK_SIZE_N': 32, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 1, 'NUM_STAGES': 2}
-                  | {'kpack': 2, 'matrix_instr_nonkdim': 16, 'waves_per_eu': 4}, num_warps=4),
-    triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 128, 'GROUP_SIZE_M': 4, 'NUM_STAGES': 2}
-                  | {'kpack': 2, 'matrix_instr_nonkdim': 16, 'waves_per_eu': 2}, num_warps=4),
-    triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 128, 'GROUP_SIZE_M': 4, 'NUM_STAGES': 2}
-                  | {'kpack': 1, 'matrix_instr_nonkdim': 16, 'waves_per_eu': 0}, num_warps=8),
-    triton.Config({'BLOCK_SIZE_M': 256, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 6, 'NUM_STAGES': 2}
-                  | {'matrix_instr_nonkdim': 16, 'waves_per_eu': 0}, num_warps=8, num_stages=2)
+    # triton.Config({'BLOCK_SIZE_M': 32, 'BLOCK_SIZE_N': 32, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 2, 'NUM_STAGES': 2}
+    #               | {'kpack': 2, 'matrix_instr_nonkdim': 16, 'waves_per_eu': 0}, num_warps=4),
+    # triton.Config({'BLOCK_SIZE_M': 32, 'BLOCK_SIZE_N': 32, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 1, 'NUM_STAGES': 2}
+    #               | {'kpack': 2, 'matrix_instr_nonkdim': 16, 'waves_per_eu': 4}, num_warps=4),
+    # triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 128, 'GROUP_SIZE_M': 4, 'NUM_STAGES': 2}
+    #               | {'kpack': 2, 'matrix_instr_nonkdim': 16, 'waves_per_eu': 2}, num_warps=4),
+    # triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 128, 'GROUP_SIZE_M': 4, 'NUM_STAGES': 2}
+    #               | {'kpack': 1, 'matrix_instr_nonkdim': 16, 'waves_per_eu': 0}, num_warps=8),
+    triton.Config({'BLOCK_SIZE_M': 256, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 2, 'NUM_STAGES': 2}
+                  | {'matrix_instr_nonkdim': 16, 'waves_per_eu': 0}, num_warps=8, num_stages=3)
 ]
 
 configs = get_hip_autotune_config_full() if full_tune else hip_configs
@@ -161,18 +163,24 @@ def matmul_kernel_pipelined_mi300(a_ptr, b_ptr, c_ptr, M, N, K, stride_am, strid
     # NUM_STAGES-1 because we use tl.load that buffers results in registers
     # In general, when using tl.load + local_store
     # num buffers = pipeline-stage(local-store) - pipeline-stage(local-load)
-    NUM_BUFFERS = NUM_STAGES - 1
-    buffers_A = tlx.local_alloc((BLOCK_SIZE_M, BLOCK_SIZE_K), tlx.dtype_of(a_ptr), NUM_STAGES - 1)
-    buffers_B = tlx.local_alloc((BLOCK_SIZE_K, BLOCK_SIZE_N), tlx.dtype_of(b_ptr), NUM_STAGES - 1)
+    NUM_BUFFERS: tl.constexpr = NUM_STAGES
+    buffers_A = tlx.local_alloc((BLOCK_SIZE_M, BLOCK_SIZE_K), tlx.dtype_of(a_ptr), NUM_BUFFERS)
+    buffers_B = tlx.local_alloc((BLOCK_SIZE_K, BLOCK_SIZE_N), tlx.dtype_of(b_ptr), NUM_BUFFERS)
 
     # Pipeline Prologue. (NUM_STAGES - 1) iterations
     for i in tl.range(0, NUM_STAGES - 1, loop_unroll_factor=NUM_STAGES - 1):
         a_smem_view = tlx.local_view(buffers_A, i)
         b_smem_view = tlx.local_view(buffers_B, i)
-        a_load_reg = tl.load(a_ptrs, mask=offs_k[None, :] < K - i * BLOCK_SIZE_K)
-        b_load_reg = tl.load(b_ptrs, mask=offs_k[:, None] < K - i * BLOCK_SIZE_K)
-        tlx.local_store(a_smem_view, a_load_reg)
-        tlx.local_store(b_smem_view, b_load_reg)
+
+        a_tok = tlx.async_load(a_ptrs, a_smem_view, mask=offs_k[None, :] < K - i * BLOCK_SIZE_K)
+        b_tok = tlx.async_load(b_ptrs, b_smem_view, mask=offs_k[:, None] < K - i * BLOCK_SIZE_K)
+        tlx.async_load_commit_group([a_tok, b_tok])
+        tlx.async_load_wait_group(0)
+
+        # a_load_reg = tl.load(a_ptrs, mask=offs_k[None, :] < K - i * BLOCK_SIZE_K)
+        # b_load_reg = tl.load(b_ptrs, mask=offs_k[:, None] < K - i * BLOCK_SIZE_K)
+        # tlx.local_store(a_smem_view, a_load_reg)
+        # tlx.local_store(b_smem_view, b_load_reg)
         a_ptrs += BLOCK_SIZE_K * stride_ak
         b_ptrs += BLOCK_SIZE_K * stride_bk
 
@@ -184,8 +192,13 @@ def matmul_kernel_pipelined_mi300(a_ptr, b_ptr, c_ptr, M, N, K, stride_am, strid
         # prefetch data for k into regs, this is NUM_STAGES - 1 ahead of the k in the following tl.dot
         a_k_smem_view = tlx.local_view(buffers_A, k % NUM_BUFFERS)
         b_k_smem_view = tlx.local_view(buffers_B, k % NUM_BUFFERS)
-        a_load_reg = tl.load(a_ptrs, mask=offs_k[None, :] < K - k * BLOCK_SIZE_K)
-        b_load_reg = tl.load(b_ptrs, mask=offs_k[:, None] < K - k * BLOCK_SIZE_K)
+
+        a_tok = tlx.async_load(a_ptrs, a_k_smem_view, mask=offs_k[None, :] < K - k * BLOCK_SIZE_K)
+        b_tok = tlx.async_load(b_ptrs, b_k_smem_view, mask=offs_k[:, None] < K - k * BLOCK_SIZE_K)
+        tlx.async_load_commit_group([a_tok, b_tok])
+
+        # a_load_reg = tl.load(a_ptrs, mask=offs_k[None, :] < K - k * BLOCK_SIZE_K)
+        # b_load_reg = tl.load(b_ptrs, mask=offs_k[:, None] < K - k * BLOCK_SIZE_K)
 
         # do compute on data fetched ahead by NUM_STAGES - 1
         buf = (k - NUM_STAGES - 1) % NUM_BUFFERS
@@ -195,9 +208,10 @@ def matmul_kernel_pipelined_mi300(a_ptr, b_ptr, c_ptr, M, N, K, stride_am, strid
         b_k_prev_reg = tlx.local_load(b_k_prev_shmem)
         acc = tl.dot(a_k_prev_reg, b_k_prev_reg, acc)
 
-        # store data for k from regs to shmem, this is NUM_STAGES - 1 ahead of the k in the prev tl.dot
-        tlx.local_store(a_k_smem_view, a_load_reg)
-        tlx.local_store(b_k_smem_view, b_load_reg)
+        # # store data for k from regs to shmem, this is NUM_STAGES - 1 ahead of the k in the prev tl.dot
+        # tlx.local_store(a_k_smem_view, a_load_reg)
+        # tlx.local_store(b_k_smem_view, b_load_reg)
+        tlx.async_load_wait_group(0)
         a_ptrs += BLOCK_SIZE_K * stride_ak
         b_ptrs += BLOCK_SIZE_K * stride_bk
 
@@ -277,7 +291,7 @@ for fp8_inputs in [False, True]:
     configs.append(
         triton.testing.Benchmark(
             x_names=["M", "N", "K"],  # Argument names to use as an x-axis for the plot
-            x_vals=[256, 512, 1024, 2048, 4096],  # Different possible values for `x_name`
+            x_vals=[4096],  # Different possible values for `x_name`
             line_arg="provider",  # Argument name whose value corresponds to a different line in the plot
             # Possible values for `line_arg`
             # Don't compare to cublas for fp8 cases as torch.matmul doesn't support fp8 at the moment.
