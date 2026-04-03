@@ -195,7 +195,7 @@ To bypass, rewrite it to `local_alloc(..., num=tl.constexpr(2))` or `local_alloc
                 layout = tlx.tensor_memory_layout_encoding.make_default(shape)
             layout_handle = layout.to_ir(_semantic.builder)
     else:
-        raise NotImplementedError("User-specified layout encoding not yet implemented.")
+        layout_handle = layout.to_ir(_semantic.builder)
 
     alias_handle = None
     shared_buffer_handle = None

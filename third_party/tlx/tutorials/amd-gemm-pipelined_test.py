@@ -160,12 +160,32 @@ def matmul_kernel_pipelined_mi300(a_ptr, b_ptr, c_ptr, M, N, K, stride_am, strid
     b_ptrs = b_ptr + (offs_k[:, None] * stride_bk + offs_bn[None, :] * stride_bn)
     K_ITERS = tl.cdiv(K, BLOCK_SIZE_K)
 
+    # Padded shared layout: pad 4 elements after every 32 to avoid bank conflicts.
+    # The class constructor is used directly; class objects pass the JIT tracer's
+    # type check (isinstance(val, type) is True).
+    layout_A : tl.constexpr = tlx.padded_shared_layout_encoding(
+        interval_pads=[(32, 4)],
+        order=[1, 0],
+        shape=[BLOCK_SIZE_M, BLOCK_SIZE_K],
+        numCTAsPerCGA=[1, 1],
+        numCTASplit=[1, 1],
+        numCTAOrder=[1, 1],
+    )
+    layout_B : tl.constexpr = tlx.padded_shared_layout_encoding(
+        interval_pads=[(32, 4)],
+        order=[1, 0],
+        shape=[BLOCK_SIZE_K, BLOCK_SIZE_N],
+        numCTAsPerCGA=[1, 1],
+        numCTASplit=[1, 1],
+        numCTAOrder=[1, 1],
+    )
+
     # NUM_STAGES-1 because we use tl.load that buffers results in registers
     # In general, when using tl.load + local_store
     # num buffers = pipeline-stage(local-store) - pipeline-stage(local-load)
     NUM_BUFFERS: tl.constexpr = NUM_STAGES
-    buffers_A = tlx.local_alloc((BLOCK_SIZE_M, BLOCK_SIZE_K), tlx.dtype_of(a_ptr), NUM_BUFFERS)
-    buffers_B = tlx.local_alloc((BLOCK_SIZE_K, BLOCK_SIZE_N), tlx.dtype_of(b_ptr), NUM_BUFFERS)
+    buffers_A = tlx.local_alloc((BLOCK_SIZE_M, BLOCK_SIZE_K), tlx.dtype_of(a_ptr), NUM_BUFFERS, layout=layout_A)
+    buffers_B = tlx.local_alloc((BLOCK_SIZE_K, BLOCK_SIZE_N), tlx.dtype_of(b_ptr), NUM_BUFFERS, layout=layout_B)
 
     # Pipeline Prologue. (NUM_STAGES - 1) iterations
     for i in tl.range(0, NUM_STAGES - 1, loop_unroll_factor=NUM_STAGES - 1):
