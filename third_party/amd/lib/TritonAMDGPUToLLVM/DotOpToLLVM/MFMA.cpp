@@ -281,6 +281,12 @@ struct DotOpMFMAConversionHelper {
 
     unsigned kBase = maybeMfmaIntrinsic->kBase;
 
+    // If kDim > kDimOperandSize, we need to zero-pad the tail of each kBase
+    // vector. The number of padding slots is kBase * (1 - kDimOperandSize/kDim).
+    const auto paddingFactor =
+        kDim > kDimOperandSize ? (kDim / kDimOperandSize) : 1;
+    const int kPadding = kBase - kBase / paddingFactor;
+
     auto aEncoding = cast<DotOperandEncodingAttr>(aTensorTy.getEncoding());
     auto bEncoding = cast<DotOperandEncodingAttr>(bTensorTy.getEncoding());
     int kWidth = aEncoding.getKWidth();
@@ -326,10 +332,10 @@ struct DotOpMFMAConversionHelper {
     bool preserveBF16 = intrinsicName.contains(".bf16") && mfmaVersion >= 4;
     auto operandA = getValuesFromDotOperandLayoutStruct(
         loadedA, numRepB, numRepM, numRepKA, kWidth, kBase,
-        aTensorTy.getElementType(), allowXF32, preserveBF16);
+        aTensorTy.getElementType(), allowXF32, preserveBF16, kPadding);
     auto operandB = getValuesFromDotOperandLayoutStruct(
         loadedB, numRepB, numRepN, numRepKB, kWidth, kBase,
-        bTensorTy.getElementType(), allowXF32, preserveBF16);
+        bTensorTy.getElementType(), allowXF32, preserveBF16, kPadding);
 
     int warpSize = triton::gpu::lookupThreadsPerWarp(rewriter);
     int elemsPerVec = mDim * nDim / warpSize;
@@ -466,7 +472,7 @@ struct DotOpMFMAConversionHelper {
   virtual ValueTable getValuesFromDotOperandLayoutStruct(
       Value value, int batch, int nonKRep, int kRepInKWidth, int kWidth,
       int kBase, Type type, bool allowXF32, bool preserveBF16,
-      bool isConstantScale = false) const {
+      int kPadding = 0, bool isConstantScale = false) const {
     auto tb = TritonLLVMOpBuilder(loc, rewriter);
     auto elems = unpackLLElements(loc, value, rewriter);
     // number of kBase-element vectors
@@ -493,8 +499,15 @@ struct DotOpMFMAConversionHelper {
           Value rawElems = tb.undef(ty);
           for (int k = 0; k < kBase; ++k) {
             auto index = linearize({b, nonK, kBaseVec, k}, strides);
-            rawElems =
-                tb.insert_element(ty, rawElems, elems[index], tb.i32_val(k));
+            if (k < kBase - kPadding) {
+              rawElems =
+                  tb.insert_element(ty, rawElems, elems[index], tb.i32_val(k));
+            } else {
+              // pad with zeros for kDim < kDimInstr
+              Value zero = LLVM::ConstantOp::create(
+                  rewriter, loc, elemTy, rewriter.getZeroAttr(elemTy));
+              rawElems = tb.insert_element(ty, rawElems, zero, tb.i32_val(k));
+            }
           }
 
           // Step 2: process rawElems based on element type
@@ -689,12 +702,20 @@ struct ScaledDotOpMFMAConversionHelper : DotOpMFMAConversionHelper {
     int aNonKPackedVals = scaleAKBase / akPackedVals;
     int bNonKPackedVals = scaleBKBase / bkPackedVals;
 
+    // If kDim > kDimOperandSize, zero-pad the tail of each kBase vector.
+    const auto paddingFactor =
+        kDim > kDimOperandSize ? (kDim / kDimOperandSize) : 1;
+    const int aKPadding = aKBase - aKBase / paddingFactor;
+    const int bKPadding = bKBase - bKBase / paddingFactor;
+
     auto operandA = getValuesFromDotOperandLayoutStruct(
         loadedA, numRepB, numRepM, numRepK, aKWidth, aKBase,
-        aTensorTy.getElementType(), allowXF32, /*preserveBF16=*/false);
+        aTensorTy.getElementType(), allowXF32, /*preserveBF16=*/false,
+        aKPadding);
     auto operandB = getValuesFromDotOperandLayoutStruct(
         loadedB, numRepB, numRepN, numRepK, bKWidth, bKBase,
-        bTensorTy.getElementType(), allowXF32, /*preserveBF16=*/false);
+        bTensorTy.getElementType(), allowXF32, /*preserveBF16=*/false,
+        bKPadding);
 
     // Scales have the same replica distributions as their corresponding
     // operands.
@@ -705,13 +726,13 @@ struct ScaledDotOpMFMAConversionHelper : DotOpMFMAConversionHelper {
       operandAScale = getValuesFromDotOperandLayoutStruct(
           loadedAScale, numRepB, numRepM, numRepK, scaleKWidth, scaleAKBase,
           aScaleTensorTy.getElementType(), allowXF32, /*preserveBF16=*/false,
-          isAScaleConstant);
+          /*kPadding=*/0, isAScaleConstant);
 
       auto bScaleTensorTy = cast<RankedTensorType>(bScale.getType());
       operandBScale = getValuesFromDotOperandLayoutStruct(
           loadedBScale, numRepB, numRepN, numRepK, scaleKWidth, scaleBKBase,
           bScaleTensorTy.getElementType(), allowXF32, /*preserveBF16=*/false,
-          isBScaleConstant);
+          /*kPadding=*/0, isBScaleConstant);
     }
 
     auto dstElemTy = dTensorTy.getElementType();
