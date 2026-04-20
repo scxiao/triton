@@ -22,12 +22,43 @@ import argparse
 import torch
 import triton
 import triton.language as tl
+from torch.profiler import profile, ProfilerActivity
+import os
+import contextlib
 
 
 try:
     from torch._inductor.runtime import triton_helpers
 except ImportError:
     triton_helpers = None
+
+
+def profiler_or_nullcontext(kernel_name: str, enabled: bool, with_stack: bool):
+    def _kineto_trace_handler(p: torch.profiler.profile) -> None:
+        trace_url = "/tmp/libkineto_activities_{}_{}.json".format(
+            os.getpid(),
+            kernel_name,
+        )
+
+        print(
+             p.key_averages(group_by_input_shape=True).table(
+                  sort_by='self_cuda_time_total'
+             )
+        )
+        print(f"trace url: {trace_url}")
+        p.export_chrome_trace(trace_url)
+
+
+    return (
+         profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+         on_trace_ready=_kineto_trace_handler,
+         with_stack=with_stack,
+         record_shapes=True,
+         )
+         if enabled
+         else contextlib.nullcontext()
+    )
+
 
 # ============================================================
 # AMD: triton_poi_fused_add_cat_div_permute_select_sigmoid_slice_squeeze_sum_view_162
