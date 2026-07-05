@@ -1,0 +1,350 @@
+import torch
+import triton
+from triton.experimental import gluon
+from triton.experimental.gluon import language as gl
+from trtion.experimental.gluon.language.amd.gfx1250 import async_copy as cp
+
+
+# -------------- 1. kernel calling async_copy --------------------
+@gluon.jit
+def kernel_async_copy_local_prefetch(
+    a_ptr,
+    b_ptr,
+    c_ptr,
+    M,
+    N,
+    K,
+    stride_am,
+    stride_ak,
+    stride_bk,
+    stride_bn,
+    stride_cm,
+    stride_cn,
+    BLOCK_M: gl.constexpr,
+    BLOCK_N: gl.constexpr,
+    BLOCK_K: gl.constexpr,    
+):
+    """
+    GEMM kernel using async_copy for gfx1250.
+
+    Computes C = A @ B where:
+    - A is (M, K) row-major (K-contiguous)
+    - B is (K, N) column-major (K-contiguous), created via torch.randn(N, K).T
+    - C is (M, N) in float32
+    """    
+
+    pid = gl.program_id(axis=0)
+    num_pid_n = gl.cdiv(N, BLOCK_N)
+
+    pid_m = pid // num_pid_n
+    pid_n = pid % num_pid_n
+    
+    gLoadLayoutA : gl.constexpr = gl.BlockedLayout(
+        [1, 8],
+        [2, 16],
+        [4, 1],
+        [1, 0],
+    )
+    
+    gLoadLayoutB : gl.constexpr = gl.BlackedLayout(
+        [8, 1],
+        [16, 2],
+        [1, 4],
+        [0, 1],
+    )
+    
+    sharedLayoutA: gl.constexpr = gl.PaddedSharedLayout.with_identity_for(
+        [[256, 16]]
+        [BLOCK_M, BLOCK_K],
+        [1, 0],
+    )
+    
+    sharedLayoutB: gl.constexpr = gl.PaddedSharedLayout.with_identify_for(
+        [[256, 16]],
+        [BLOCK_K, BLOCK_N],
+        [0, 1],
+    )
+    
+    smemA = gl.allocate_shared_memory(a_ptr.dtype.element_ty, [2, BLOCK_M, BLOCK_K], layout=sharedLayoutA)
+    smemB = gl.allocate_shared_memory(b_ptr.dtype.element_ty, [2, BLOCK_K, BLOCK_N], layout=sharedLayoutB)
+
+    offs_am = gl.arrange(0, BLOCK_M, gl.SliceLayout(1, gLoadLayoutA))
+    offs_ak = gl.arrange(0, BLOCK_K, gl.SliceLayout(0, gLoadLayoutA))
+
+    offs_bn = gl.arrange(0, BLOCK_N, gl.SliceLayout(0, gLoadLayoutB))
+    offs_bk = gl.arrange(0, BLOCK_K, gl.SliceLayout(1, gLoadLayoutB))
+
+    a_base = a_ptr + pid_m * BLOCK_M * stride_am
+    b_base = b_ptr + pid_n * BLOCK_N * stride_bn
+    # async_copy.global_to_shared requires full pointer tensors
+    a_ptrs = a_base + offs_am[:, None] * stride_am + offs_ak[None, :] * stride_ak
+    b_ptrs = b_base + offs_bk[:, None] * stride_bk + offs_bn[None, :] * stride_bn
+    
+    wmmaLayout: gl.constexpr = gl.amd.AMDWMMALayout(
+        version=3, transpose=True, warp_bases=[[0, 1], [1, 0]], instr_shape=[16, 16, 32]
+    )
+    
+    dotOpLayoutA: gl.constexpr = gl.DotOperandLayout(operand_index=0, parent=wmmaLayout, k_width=8)
+    dotOpLayoutB: gl.constexpr = gl.DotOperandLayout(operand_index=1, parent=wmmaLayout, k_width=8)
+
+    acc = gl.zeros((BLOCK_M, BLOCK_N), gl.float32, wmmaLayout)
+
+    iterMax = gl.cdiv(K, BLOCK_K)
+
+    # load A, B to lds buffer 0
+    g_idx = 0
+    cp.global_to_shared(smemA.index(g_idx), a_ptrs)
+    cp.global_to_shared(smemB.index(g_idx), b_ptrs)
+    cp.commit_group()
+    a_ptrs += BLOCK_K * stride_ak
+    b_ptrs += BLOCK_K * stride_bk
+    
+    # load A, B to lds buffer 0
+    g_idx = 1    
+    cp.global_to_shared(smemA.index(g_idx), a_ptrs)
+    cp.global_to_shared(smemB.index(g_idx), b_ptrs)
+    cp.commit_group()
+    a_ptrs += BLOCK_K * stride_ak
+    b_ptrs += BLOCK_K * stride_bk
+
+    # wait buffer 0 to complete    
+    cp.wait_group(1)
+
+    # local_load a0, b0 -> buffer 0
+    l_idx = 0
+    a = smemA.index(l_idx).load(layout=dotOpLayoutA)
+    b = smemB.index(l_idx).load(layout=dotOpLayoutB)
+
+    for k in range(0, iterMax - 1):
+        l_idx = (k + 1) % 2
+        g_idx = k % 2
+        
+        acc = gl.amd.gfx1250.wmma(a, b, acc)
+        
+        # wait for all outstanding TDM loads to complete
+        cp.wait_group(0)
+
+        cp.global_to_shared(smemA.index(g_idx), a_ptrs, mask=(k < iterMax - 2))
+        cp.global_to_shared(smemB.index(g_idx), b_ptrs, mask=(k < iterMax - 2))
+        cp.commit_group()
+         
+        a_next = smemA.index(l_idx).load(layout=dotOpLayoutA)
+        b_next = smemB.index(l_idx).load(layout=dotOpLayoutB)
+
+        a = a_next
+        b = b_next
+        
+        a_ptrs += BLOCK_K * stride_ak
+        b_ptrs += BLOCK_K * stride_bk
+
+    # epilogue
+    acc = gl.amd.gfx1250.wmma(a, b, acc)
+    
+    # store results back
+    gStoreLayoutC: gl.constexpr = wmmaLayout
+    c = gl.convert_layout(acc, layout=gStoreLayoutC)
+    offs_cm = pid_m * BLOCK_M + gl.arrange(0, BLOCK_M, gl.SliceLayout(1, gStoreLayoutC))
+    offs_cn = pid_n * BLOCK_N + gl.arrange(0, BLOCK_N, gl.SliceLayout(0, gStoreLayoutC))
+    offs_c = stride_cm * offs_cm[:, None] + stride_cn * offs_cn[None, :]
+    c_mask = (offs_cm[:, None] < M) & (offs_cn[None, :] < N)
+    gl.amd.gfx1250.buffer_store(c, c_ptr, offs_c, mask=c_mask)
+
+
+def matmul_async_copy_local_prefetch(a, b):
+    assert a.shape[1] == b.shape[0], "Incompatible dimensions"
+    assert a.is_contiguous(), "Matrix A must be contiguous"
+    
+    M, K = a.shape
+    _, N = b.shape
+    
+    BLOCK_M, BLOCK_N, BLOCK_K = 256, 256, 128
+    num_warps = 4
+    c = torch.zeros((M, N), dtype=torch.float32, device='cuda')
+    stride_am, stride_ak = a.stride(0), a.stride(1)
+    stride_bk, stride_bn = b.stride(0), b.stride(1)
+    stride_cm, stride_cn = c.stride(0), c.stride(1)
+
+    GRID_MN = triton.cdiv(M, BLOCK_M) * triton.cdiv(N, BLOCK_N)
+    grid = (GRID_MN,)
+    kernel_async_copy_local_prefetch[grid](
+        a,
+        b,
+        c,
+        M,
+        N,
+        K,
+        stride_am, stride_ak,
+        stride_bk, stride_bn,
+        stride_cm, stride_cn,
+        BLOCK_M=BLOCK_M,
+        BLOCK_N=BLOCK_N,
+        BLOCK_K=BLOCK_K,
+    )
+
+    return c
+
+
+# 2. -------------------------- kernel tdm local_prefetch ---------------------
+def kernel_tdm_local_prefetch(
+    a_ptr,
+    b_ptr,
+    c_ptr,
+    M,
+    N,
+    K,
+    stride_am,
+    stride_ak,
+    stride_bk,
+    stride_bn,
+    stride_cm,
+    stride_cn,
+    BLOCK_M: gl.constexpr,
+    BLOCK_N: gl.constexpr,
+    BLOCK_K: gl.constexpr,    
+):
+    """
+    GEMM kernel with local prefetch pipeline using TDM for gfx1250.
+
+    Computes C = A @ B where:
+    - A is (M, K) row-major (K-contiguous)
+    - B is (K, N) row-major after b.contiguous()
+    - C is (M, N) in float32
+    """
+
+    pid = gl.program_id(axis=0)
+    num_pid_n = gl.cdiv(N, BLOCK_N)
+
+    pid_m = pid // num_pid_n
+    pid_n = pid % num_pid_n
+
+    sharedLayoutA: gl.constexpr = gl.PaddedSharedLayout.with_identity_for(
+        [[128, 8]]
+        [BLOCK_M, BLOCK_K],
+        [1, 0],
+    )
+    
+    sharedLayoutB: gl.constexpr = gl.PaddedSharedLayout.with_identify_for(
+        [[256, 16]],
+        [BLOCK_K, BLOCK_N],
+        [1, 0],
+    )
+
+    a_desc = gl.amd.gfx1250.tdm.make_tensor_descriptor(
+        base = a_ptr + pid_m * BLOCK_M * stride_am,
+        shape = (M, K),
+        stride = (stride_am, stride_ak),
+        block_shape = (BLOCK_M, BLOCK_K),
+        layout = sharedLayoutA,
+    )
+    
+    b_desc = gl.amd.gfx1250.tdm.make_tensor_descriptor(
+        base = b_ptr + pid_n * BLOCK_N, * stride_bn,
+        shape = (K, N),
+        stride = (stride_bk, stride_bn),
+        block_shape = (BLOCK_K, BLOCK_N),
+        layout = sharedLayoutB,
+    )
+    
+    smemA = gl.allocate_shared_memory(a_ptr.dtype.element_ty, [2, BLOCK_M, BLOCK_K], layout=sharedLayoutA)
+    smemB = gl.allocate_shared_memory(b_ptr.dtype.element_ty, [2, BLOCK_K, BLOCK_N], layout=sharedLayoutB)
+    
+    wmmaLayout: gl.constexpr = gl.amd.AMDWMMALayout(
+        version=3, transpose=True, warp_bases=[[0, 1], [1, 0]], instr_shape=[16, 16, 32]
+    )
+    
+    dotOpLayoutA: gl.constexpr = gl.DotOperandLayout(operand_index=0, parent=wmmaLayout, k_width=8)
+    dotOpLayoutB: gl.constexpr = gl.DotOperandLayout(operand_index=1, parent=wmmaLayout, k_width=8)
+
+    acc = gl.zeros((BLOCK_M, BLOCK_N), gl.float32, wmmaLayout)
+    iterMax = gl.cdiv(K, BLOCK_K)
+
+    # load A, B to lds buffer 0
+    gl.amd.gfx1250.tdm.async_load(a_desc, [0, 0], smemA.index(0))
+    gl.amd.gfx1250.tdm.async_load(b_desc, [0, 0], smemB.index(0))
+
+    # load A, B to lds buffer 0
+    gl.amd.gfx1250.tdm.async_load(a_desc, [0, BLOCK_K], smemA.index(1))
+    gl.amd.gfx1250.tdm.async_load(b_desc, [BLOCK_K, 0], smemB.index(1))
+
+    # wait async copy to lds buffer 0 to finish
+    gl.amd.gfx1250.tdm.async_wait(2)
+
+    # local_load a0, b0 -> buffer 0
+    a = smemA.index(0).load(layout=dotOpLayoutA)
+    b = smemB.index(0).load(layout=dotOpLayoutB)
+
+    for k in range(0, iterMax - 1):
+        l_idx = (k + 1) % 2
+        g_idx = k % 2
+        
+        acc = gl.amd.gfx1250.wmma(a, b, acc)
+        
+        # wait for all outstanding TDM loads to complete
+        gl.amd.gfx1250.async_wait(0)
+        
+        pred = k - iterMax + 2
+        pred = (pred >> 31) & 1
+        gl.amd.gfx1250.tdm.async_load(a_desc, [0, (k + 2) * BLOCK_K], smemA.index(g_idx), pred=pred)
+        gl.amd.gfx1250.tdm.async_load(b_desc, [(k + 2) * BLOCK_K, 0], smemB.index(g_idx), pred=pred)
+
+        # local load next tile
+        a_next = smemA.index(l_idx).load(layout=dotOpLayoutA)
+        b_next = smemB.index(l_idx).load(layout=dotOpLayoutB)
+        
+        # move to next tile
+        a = a_next
+        b = b_next
+        
+    # epilogue
+    acc = gl.amd.gfx1250.wmma(a, b, acc)
+    
+    # store results back
+    gStoreLayoutC: gl.constexpr = wmmaLayout
+    c = gl.convert_layout(acc, layout=gStoreLayoutC)
+    offs_cm = pid_m * BLOCK_M + gl.arrange(0, BLOCK_M, gl.SliceLayout(1, gStoreLayoutC))
+    offs_cn = pid_n * BLOCK_N + gl.arrange(0, BLOCK_N, gl.SliceLayout(0, gStoreLayoutC))
+    offs_c = stride_cm * offs_cm[:, None] + stride_cn * offs_cn[None, :]
+    c_mask = (offs_cm[:, None] < M) & (offs_cn[None, :] < N)
+    gl.amd.gfx1250.buffer_store(c, c_ptr, offs_c, mask=c_mask)
+
+
+def matmul_tdm_local_prefetch(a, b):
+    assert a.shape[1] == b.shape[0], "Incompatible dimensions"
+    assert a.is_contiguous(), "Matrix A must be contiguous"
+    
+    M, K = a.shape
+    _, N = b.shape
+    
+    b = b.contiguous()
+    BLOCK_M, BLOCK_N, BLOCK_K = 256, 256, 128
+    num_warps = 4
+    c = torch.zeros((M, N), dtype=torch.float32, device='cuda')
+    stride_am, stride_ak = a.stride(0), a.stride(1)
+    stride_bk, stride_bn = b.stride(0), b.stride(1)
+    stride_cm, stride_cn = c.stride(0), c.stride(1)
+
+    GRID_MN = triton.cdiv(M, BLOCK_M) * triton.cdiv(N, BLOCK_N)
+    grid = (GRID_MN,)
+    kernel_tdm_local_prefetch[grid](
+        a,
+        b,
+        c,
+        M,
+        N,
+        K,
+        stride_am, stride_ak,
+        stride_bk, stride_bn,
+        stride_cm, stride_cn,
+        BLOCK_M=BLOCK_M,
+        BLOCK_N=BLOCK_N,
+        BLOCK_K=BLOCK_K,
+    )
+
+    return c
+
+# 3. ------------------------ TDM with partition shared layout local prefetch ---------------------------
+
+
+
+
+
