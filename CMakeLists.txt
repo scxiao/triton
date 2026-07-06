@@ -327,6 +327,11 @@ if(TRITON_BUILD_PYTHON_MODULE)
     set(Python_VERSION "${Python3_VERSION}")
     set(Python_INTERPRETER_ID "${Python3_INTERPRETER_ID}")
   endif()
+  if(NOT TARGET Python::Interpreter)
+    add_executable(Python::Interpreter IMPORTED)
+    set_target_properties(Python::Interpreter PROPERTIES
+      IMPORTED_LOCATION "${Python3_EXECUTABLE}")
+  endif()
 
   find_package(nanobind CONFIG REQUIRED HINTS "${Python3_SITELIB}")
   nanobind_build_library(nanobind-static)
