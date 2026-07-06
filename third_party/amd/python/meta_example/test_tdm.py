@@ -395,7 +395,7 @@ def kernel_tdm_local_prefetch_partition_layout(
     # shared layout for B input
     # NUM_PARTITIONS: gl.constexpr = 2
     # NUM_GROUPS: gl.constexpr = 2
-    PARTITION_DIM_B: gl.constexpr = 0
+    PARTITION_DIM_B: gl.constexpr = 1
     inner_shape_n: gl.constexpr = BLOCK_N // (NUM_PARTITIONS * NUM_GROUPS)
     # inner_shape_k: gl.constexpr = BLOCK_K
     inner_layoutB: gl.constexpr = gl.PaddedSharedLayout.with_identity_for([[64, 16]], [inner_shape_k, inner_shape_n],
@@ -540,6 +540,6 @@ def test_correctness(matmul, M, N, K, dtype, trans_b=False):
         print("  torch [0,:8] =", c_torch[0, :8].tolist())
 
 
-# test_correctness(matmul_async_copy_local_prefetch, 4096, 4096, 256, torch.bfloat16)
-# test_correctness(matmul_tdm_local_prefetch, 4096, 4096, 4096, torch.bfloat16)
+test_correctness(matmul_async_copy_local_prefetch, 4096, 4096, 512, torch.bfloat16)
+test_correctness(matmul_tdm_local_prefetch, 4096, 4096, 4096, torch.bfloat16)
 test_correctness(matmul_tdm_local_prefetch_partition_layout, 4096, 4096, 4096, torch.bfloat16)
