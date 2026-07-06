@@ -543,3 +543,45 @@ def test_correctness(matmul, M, N, K, dtype, trans_b=False):
 test_correctness(matmul_async_copy_local_prefetch, 4096, 4096, 512, torch.bfloat16)
 test_correctness(matmul_tdm_local_prefetch, 4096, 4096, 4096, torch.bfloat16)
 test_correctness(matmul_tdm_local_prefetch_partition_layout, 4096, 4096, 4096, torch.bfloat16)
+
+
+def main():
+    configs = [
+        triton.testing.Benchmark(
+            x_names=["M", "N", "K"],
+            x_vals=[512 * i for i in range(4, 8)],
+            line_arg="kernels",
+            line_vals=["async_copy", "tdm", "tdm_partition"],
+            line_names=["async_copy", "tdm", "tdm_partition"],
+            styles=[("green", "-"), ("yellow", "--"), ("red", "--")],
+            ylabel="TFLOPS",
+            plot_name=f"matmul-performance",
+            args={},
+        )
+    ]
+
+    @triton.testing.perf_report(configs)
+    def benchmark(M, N, K, kernels):
+        torch_dtype = torch.float16
+        a = torch.randn((M, K), dtype=torch_dtype, device='cuda')
+        b = torch.randn((N, K), dtype=torch_dtype, device='cuda').T
+        quantiles = [0.5, 0.2, 0.8]
+
+        ms, min_ms, max_max = -1, -1, -1
+        if kernels == "async_copy":
+            ms, min_ms, max_ms = triton.testing.do_bench(lambda: matmul_async_copy_local_prefetch(a, b), quantiles=quantiles)
+        if kernels == "tdm":
+            ms, min_ms, max_ms = triton.testing.do_bench(lambda: matmul_tdm_local_prefetch(a, b), quantiles=quantiles)
+        if kernels == "tdm_partition":
+            ms, min_ms, max_ms = triton.testing.do_bench(lambda: matmul_tdm_local_prefetch_partition_layout(a, b), quantiles=quantiles)
+
+        def perf(ms):
+            return 2 * M * N * K * 1e-12 / (ms * 1e-3)
+
+        return perf(ms), perf(max_ms), perf(min_ms)
+
+    benchmark.run(show_plots=False, print_data=True)
+
+
+if __name__ == "__main__":
+    main()
