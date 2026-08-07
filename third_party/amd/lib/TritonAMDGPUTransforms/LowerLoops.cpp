@@ -174,18 +174,27 @@ std::optional<ttg::SharedEncodingTrait> getSharedEncIfAllUsersAreDotEnc(
         // For architectures that don't support scattering into LDS we must
         // ensure that each warp writes a contiguous memory chunk. This requires
         // the shared memory order to follow the thread order, while preserving
-        // the fastest dimension from the register order to keep vectorization.
+        // the fastest dimension from the memory order if it's contiguous > 1 to
+        // keep vectorization.
         auto llEnc =
             triton::gpu::toLinearEncoding(cast<RankedTensorType>(srcTy));
-        auto regOrder = llEnc.getOrder();
         auto threadOrder = llEnc.getThreadOrder();
 
-        auto contig = llEnc.getElemsPerThread(srcTy.getShape());
         SetVector<unsigned> orderSet;
-        if (contig[regOrder[0]] > 1)
-          orderSet.insert(regOrder[0]);
-        orderSet.insert(threadOrder.begin(), threadOrder.end());
-        order = orderSet.takeVector();
+
+        auto regContig = llEnc.getContigPerThread()[order[0]];
+        unsigned elemBitWidth = srcTy.getElementType().getIntOrFloatBitWidth();
+        unsigned finalRegContig =
+            fitToValidDirectToLdsVecSize(regContig, elemBitWidth, targetInfo);
+        // We only apply the order change if we find a vector size which works
+        // for async copy.
+        if (finalRegContig > 0) {
+          // Preserve the fastest reg dim for contig > 1 to keep vectorization.
+          if (finalRegContig > 1)
+            orderSet.insert(order[0]);
+          orderSet.insert(threadOrder.begin(), threadOrder.end());
+          order = orderSet.takeVector();
+        }
       }
 
       unsigned bitWidth = srcTy.getElementType().getIntOrFloatBitWidth();
