@@ -46,7 +46,7 @@ static void createBarrier(TritonLLVMIRRewriter &b, unsigned barIdx,
     LLVM::NVIDIA::createSyncWarp(b.getLoc(), b);
   else
     NVVM::BarrierOp::create(b, b.getLoc(), TypeRange{}, b.i32_val(barIdx),
-                            b.i32_val(numThreads), {}, Value{});
+                            b.i32_val(numThreads));
 }
 
 static void createAllBarrier(TritonLLVMIRRewriter &b, unsigned barIdx) {
@@ -81,7 +81,8 @@ static LogicalResult rewriteWarpGroupBarriers(LLVM::LLVMFuncOp func,
     if (isa<WarpSpecializePartitionsOp>(op))
       return WalkResult::skip();
 
-    if (auto bar = dyn_cast<NVVM::Barrier0Op>(op)) {
+    if (auto bar = dyn_cast<NVVM::BarrierOp>(op);
+        bar && !bar.getBarrierId() && !bar.getNumberOfThreads()) {
       TritonLLVMIRRewriter b(bar.getLoc(), bar);
       createBarrier(b, kDefaultWarpGroupBarrierIdx, defaultWarpGroupSize);
       bar.erase();
@@ -101,7 +102,9 @@ static LogicalResult rewriteWarpGroupBarriers(LLVM::LLVMFuncOp func,
                << " warp group partitions";
       }
       unsigned warpGroupSize = threadsPerWarp * op.getPartitionNumWarps()[idx];
-      partition->walk([&](NVVM::Barrier0Op bar) {
+      partition->walk([&](NVVM::BarrierOp bar) {
+        if (bar.getBarrierId() || bar.getNumberOfThreads())
+          return;
         TritonLLVMIRRewriter b(bar.getLoc(), bar);
         createBarrier(b, barIdx, warpGroupSize);
         bar.erase();

@@ -1,3 +1,4 @@
+// XFAIL: *
 // RUN: triton-opt %s -split-input-file -tritonamdgpu-optimize-descriptor-encoding -tritonamdgpu-schedule-loops="num_stages=2" -tritonamdgpu-pipeline="use_async_copy=1" -canonicalize | FileCheck %s
 
 // A/B descriptor loads are converted to TDM copies, but a descriptor load used

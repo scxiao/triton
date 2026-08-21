@@ -539,9 +539,9 @@ static Value createTMAlloc(IRRewriter &rewriter, LLVM::LLVMFuncOp func,
       /*onlyAttachMLIRArgs=*/true);
   auto voidTy = void_ty(func->getContext());
   ptxBuilder.launch(rewriter, loc, void_ty(func->getContext()));
-  NVVM::Barrier0Op::create(rewriter, loc);
+  NVVM::BarrierOp::create(rewriter, loc);
   Value address = b.load(i32_ty, sharedMem);
-  NVVM::Barrier0Op::create(rewriter, loc);
+  NVVM::BarrierOp::create(rewriter, loc);
   address = b.inttoptr(ptr_ty(func.getContext(), 6), address);
   return address;
 }
@@ -567,7 +567,7 @@ void freeTMAlloc(LLVM::LLVMFuncOp func, Value alloc, size_t size, Value pred,
       NVVM::ClusterArriveOp::create(b, loc, UnitAttr::get(ctx));
       NVVM::ClusterWaitOp::create(b, loc, UnitAttr::get(ctx));
     } else {
-      NVVM::Barrier0Op::create(b, loc);
+      NVVM::BarrierOp::create(b, loc);
     }
     PTXBuilder ptxBuilder;
     // Calculate the predicate in the inline asm to avoid creating long

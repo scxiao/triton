@@ -20,27 +20,27 @@ llvm.func @rewrite_barriers() attributes {allocation.offset = 32 : i32} {
 
   // CHECK: bb{{[0-9]+}}:
   // CHECK-NEXT: nvvm.barrier id = [[C0]] number_of_threads = [[C128]]
-  nvvm.barrier0
+  nvvm.barrier
   ttg.warp_specialize() attributes {allocation.offset = 0 : i32, warpGroupStartIds = array<i32: 4, 8, 10>}
   default {
     // CHECK: nvvm.barrier id = [[C0]] number_of_threads = [[C128]]
-    nvvm.barrier0
+    nvvm.barrier
     ttg.warp_yield
   }
   partition0() num_warps(4) {
-    nvvm.barrier0
+    nvvm.barrier
     ttg.warp_return
   }
   partition1() num_warps(2) {
-    nvvm.barrier0
+    nvvm.barrier
     ttg.warp_return
   }
   partition2() num_warps(1) {
-    nvvm.barrier0
+    nvvm.barrier
     ttg.warp_return
   } : () -> ()
   // CHECK: nvvm.barrier id = [[C0]] number_of_threads = [[C128]]
-  nvvm.barrier0
+  nvvm.barrier
   llvm.return
 }
 
