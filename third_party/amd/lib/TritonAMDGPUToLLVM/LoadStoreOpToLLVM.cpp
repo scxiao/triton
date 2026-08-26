@@ -13,6 +13,7 @@
 #include "mlir/IR/TypeUtilities.h"
 #include "mlir/IR/ValueRange.h"
 #include "mlir/Transforms/DialectConversion.h"
+#include "triton/Analysis/Utility.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
 #include "triton/Dialect/Triton/IR/Types.h"
 #include "triton/Dialect/TritonGPU/IR/Attributes.h"
@@ -768,9 +769,12 @@ struct BufferLoadToLocalOpConversion
     SmallVector<Value> offsetElems =
         unpackTensorElements(loc, llOffset, rewriter, offset.getType());
     SmallVector<Value> otherElems;
-    if (llOther)
+    bool isOtherZeroConst = false;
+    if (llOther) {
       otherElems =
           unpackTensorElements(loc, llOther, rewriter, op.getOther().getType());
+      isOtherZeroConst = isZeroConst(op.getOther());
+    }
 
     auto dstTy = op.getDest().getType();
     auto resElemTy = getTypeConverter()->convertType(dstTy.getElementType());
@@ -849,7 +853,7 @@ struct BufferLoadToLocalOpConversion
       // can avoid the branch by selecting an out-of-range *shared* address. The
       // HW will drop the load before fetching the data from global memory so we
       // will not overwrite values.
-      if (isThreadPredWarpUniform && !hasOther) {
+      if (isThreadPredWarpUniform || (hasOther && isOtherZeroConst)) {
         Value predicatedAddress =
             selectLdsAddressForPredicate(b, threadPred, shmemAddr);
         auto bufferLoadToLds = bufferEmitter.emitLoadToLds(
@@ -858,22 +862,22 @@ struct BufferLoadToLocalOpConversion
         if (targetInfo.requiresAliasInfoForAsyncOps())
           AMD::addAsyncCopyAliasScope(bufferLoadToLds);
       } else {
-        Value pred =
-            hasOther ? b.and_(threadPred, maybeSwizzledMaskElem) : threadPred;
-        auto [loadBlock, afterLoadBlock] = emitBranch(rewriter, loc, pred);
-
-        auto bufferLoadToLds = bufferEmitter.emitLoadToLds(
-            vecTy, vecBytesVal, rsrcDesc, offsetElem, shmemAddr,
-            hasOther ? b.true_val() : maybeSwizzledMaskElem, op.getCache());
-        if (targetInfo.requiresAliasInfoForAsyncOps())
-          AMD::addAsyncCopyAliasScope(bufferLoadToLds);
-
-        rewriter.setInsertionPointToStart(afterLoadBlock);
-
         if (hasOther) {
+          Value pred =
+              hasOther ? b.and_(threadPred, maybeSwizzledMaskElem) : threadPred;
+          auto [loadBlock, afterLoadBlock] = emitBranch(rewriter, loc, pred);
+
+          auto bufferLoadToLds = bufferEmitter.emitLoadToLds(
+              vecTy, vecBytesVal, rsrcDesc, offsetElem, shmemAddr,
+              hasOther ? b.true_val() : maybeSwizzledMaskElem, op.getCache());
+          if (targetInfo.requiresAliasInfoForAsyncOps())
+            AMD::addAsyncCopyAliasScope(bufferLoadToLds);
+
+          rewriter.setInsertionPointToStart(afterLoadBlock);
+
           emitOtherStore(rewriter, loc, this->getTypeConverter(), vecTy,
-                         maskElem, otherElems, shmemAddr, laneId,
-                         requiresSrcPtrSwizzling, swizzleLaneOffset);
+                        maskElem, otherElems, shmemAddr, laneId,
+                        requiresSrcPtrSwizzling, swizzleLaneOffset);
         }
       }
 
