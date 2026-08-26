@@ -848,12 +848,12 @@ struct BufferLoadToLocalOpConversion
       // Buffer-load-to-local supports zero-fill for per-lane masks by adjusting
       // the src offset to be OOB. Redundant-thread predication still needs a
       // branch when there are other values, otherwise inactive threads
-      // zero-fill values loaded by active lanes from another warp.
+      // will lave the lds untorched.
       // Optimization: for warp-uniform thread predicates and no other values we
       // can avoid the branch by selecting an out-of-range *shared* address. The
       // HW will drop the load before fetching the data from global memory so we
       // will not overwrite values.
-      if (isThreadPredWarpUniform || (hasOther && isOtherZeroConst)) {
+      if (isThreadPredWarpUniform && isOtherZeroConst) {
         Value predicatedAddress =
             selectLdsAddressForPredicate(b, threadPred, shmemAddr);
         auto bufferLoadToLds = bufferEmitter.emitLoadToLds(
@@ -862,19 +862,18 @@ struct BufferLoadToLocalOpConversion
         if (targetInfo.requiresAliasInfoForAsyncOps())
           AMD::addAsyncCopyAliasScope(bufferLoadToLds);
       } else {
+        Value pred = b.and_(threadPred, maybeSwizzledMaskElem);
+        auto [loadBlock, afterLoadBlock] = emitBranch(rewriter, loc, pred);
+
+        auto bufferLoadToLds = bufferEmitter.emitLoadToLds(
+            vecTy, vecBytesVal, rsrcDesc, offsetElem, shmemAddr,
+            hasOther ? b.true_val() : maybeSwizzledMaskElem, op.getCache());
+        if (targetInfo.requiresAliasInfoForAsyncOps())
+          AMD::addAsyncCopyAliasScope(bufferLoadToLds);
+
+        rewriter.setInsertionPointToStart(afterLoadBlock);
+
         if (hasOther) {
-          Value pred =
-              hasOther ? b.and_(threadPred, maybeSwizzledMaskElem) : threadPred;
-          auto [loadBlock, afterLoadBlock] = emitBranch(rewriter, loc, pred);
-
-          auto bufferLoadToLds = bufferEmitter.emitLoadToLds(
-              vecTy, vecBytesVal, rsrcDesc, offsetElem, shmemAddr,
-              hasOther ? b.true_val() : maybeSwizzledMaskElem, op.getCache());
-          if (targetInfo.requiresAliasInfoForAsyncOps())
-            AMD::addAsyncCopyAliasScope(bufferLoadToLds);
-
-          rewriter.setInsertionPointToStart(afterLoadBlock);
-
           emitOtherStore(rewriter, loc, this->getTypeConverter(), vecTy,
                         maskElem, otherElems, shmemAddr, laneId,
                         requiresSrcPtrSwizzling, swizzleLaneOffset);
